@@ -94,14 +94,21 @@ cmake --build build --config Release
 把它作为 GitHub 仓库根目录推送即可；不要把 `mclc` 再套一层子目录，否则 Actions
 找不到 workflow。
 
-推送到 GitHub 后会自动编译：
+工作流只在推送版本标签时触发：
 
-- push 到 `main` / `master`
-- Pull Request
-- 手动触发 `workflow_dispatch`
-- 推送 `v*` 标签时，在编译完成后创建 GitHub Release
+```text
+v*.*.*
+```
 
-CI 会并行完成两套构建：
+例如：
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+普通的 `git push`、Pull Request、手动触发都**不会**编译。标签推送后 CI 会并行
+完成两套构建，并在构建成功后创建 GitHub Release。
 
 | Job | 工具链 | 产物 |
 |---|---|---|
@@ -109,7 +116,8 @@ CI 会并行完成两套构建：
 | `MinGW-w64 x64` | MSYS2 UCRT64 + GCC | `mclc-mingw-x64` artifact |
 
 每个 artifact 只包含 `mclc_gui.exe`。在 GitHub 的
-**Actions → Build → 对应运行 → Artifacts** 下载。创建 Release 时会附加：
+**Actions → Build and Release → 对应 tag 运行 → Artifacts** 下载。
+创建 Release 时会附加：
 
 - `mclc-gui-msvc-x64.exe`
 - `mclc-gui-mingw-x64.exe`

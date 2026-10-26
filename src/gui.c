@@ -526,7 +526,7 @@ static void load_config(void)
     } else {
         g_profile_current = 0;
     }
-    gui_logf(L"配置文件：%ls（%zu 个用户名）",
+    gui_logf(L"配置文件：%ls（查找到%zu个用户）",
              g_config_path ? g_config_path : L"(无法定位)",
              g_profile_count);
 }
@@ -981,7 +981,7 @@ static void refresh_java_list(void)
         }
     }
     SendMessageW(g_java, CB_SETCURSEL, 0, 0);
-    gui_logf(L"Java 检测完成，共 %zu 个版本。", g_java_entry_count);
+    gui_logf(L"检测到%zu个Java版本", g_java_entry_count);
 }
 
 static wchar_t *get_selected_java_path(void)
@@ -1510,12 +1510,12 @@ static void refresh_versions(void)
     free(versions_dir);
     free(game_dir);
 
-    gui_logf(L"本地版本扫描完成，共 %d 个。", count);
+    gui_logf(L"本地版本扫描完成，共%d个", count);
     if (count > 0) {
         SendMessageW(g_version, CB_SETCURSEL, 0, 0);
-        set_status(L"就绪。");
+        set_status(L"就绪");
     } else {
-        set_status(L"没有本地版本。请先点击“下载游戏”选择并安装版本。");
+        set_status(L"没有本地版本。请先点击“下载游戏”选择并安装版本");
     }
 }
 
@@ -1658,7 +1658,7 @@ static int run_pre_launch(const wchar_t *command, const wchar_t *directory,
                   (unsigned long)exit_code);
         return -1;
     }
-    gui_logf(L"启动前命令执行完成。");
+    gui_logf(L"启动前命令执行完成");
     return 0;
 }
 
@@ -1774,7 +1774,7 @@ static int job_download(GuiJob *job, char **error)
     }
     {
         wchar_t *wide_id = utf8_to_wide(version.id);
-        gui_logf(L"%ls 已下载并校验。",
+        gui_logf(L"%ls 已下载并校验",
                  wide_id ? wide_id : L"(未知)");
         free(wide_id);
     }
@@ -1920,7 +1920,7 @@ static void create_controls(HWND hwnd)
     g_demo = make_control(L"BUTTON", L"演示模式",
                           BS_AUTOCHECKBOX | WS_TABSTOP, 0,
                           104, 132, 100, 24, ID_DEMO);
-    make_label(L"下载时会校验已有文件", 240, 132, 240, 24);
+    make_label(L"下载时自动校验已有文件", 240, 132, 240, 24);
 
     g_launch = make_control(L"BUTTON", L"启动游戏", BS_PUSHBUTTON | WS_TABSTOP,
                             0, 100, 164, 140, 34, ID_LAUNCH);
@@ -1933,7 +1933,7 @@ static void create_controls(HWND hwnd)
     g_download = make_control(L"BUTTON", L"下载游戏",
                               BS_PUSHBUTTON | WS_TABSTOP, 0,
                               480, 164, 130, 34, ID_DOWNLOAD);
-    g_open_dir = make_control(L"BUTTON", L"打开目录",
+    g_open_dir = make_control(L"BUTTON", L"打开游戏目录",
                               BS_PUSHBUTTON | WS_TABSTOP, 0,
                               620, 164, 124, 34, ID_OPEN_DIR);
 
@@ -1946,7 +1946,7 @@ static void create_controls(HWND hwnd)
         SendMessageW(g_log, WM_SETFONT, (WPARAM)g_log_font, TRUE);
         SendMessageW(g_log, EM_SETLIMITTEXT, MCLC_LOG_LIMIT, 0);
     }
-    g_status = make_control(L"STATIC", L"就绪。", SS_LEFT, 0,
+    g_status = make_control(L"STATIC", L"就绪", SS_LEFT, 0,
                             16, 572, 620, 22, ID_STATUS);
     if (g_status) {
         SendMessageW(g_status, WM_SETFONT, (WPARAM)g_font, TRUE);
@@ -1977,7 +1977,7 @@ static void browse_game_dir(void)
     wchar_t display_name[MAX_PATH];
     LPITEMIDLIST pidl;
 
-    gui_logf(L"用户点击浏览游戏目录。");
+    gui_logf(L"用户点击打开游戏目录");
     memset(&browse, 0, sizeof(browse));
     browse.hwndOwner = g_hwnd;
     browse.pszDisplayName = display_name;
@@ -1992,7 +1992,7 @@ static void browse_game_dir(void)
         }
         CoTaskMemFree(pidl);
     } else {
-        gui_logf(L"用户取消选择游戏目录。");
+        gui_logf(L"用户取消选择游戏目录");
     }
 }
 
@@ -2017,13 +2017,13 @@ static void browse_java(void)
         gui_logf(L"用户选择 Java：%ls", path);
         if (entry < 0) {
             gui_logf(L"所选文件不是有效的 java.exe：%ls", path);
-            MessageBoxW(g_hwnd, L"所选文件不是有效的 java.exe。",
+            MessageBoxW(g_hwnd, L"所选文件不是有效的 java.exe",
                         L"MCLC", MB_ICONWARNING);
         } else {
             select_java_entry(entry);
         }
     } else {
-        gui_logf(L"用户取消选择 Java。");
+        gui_logf(L"用户取消选择 Java");
     }
 }
 
@@ -2033,17 +2033,17 @@ static void open_game_dir(void)
     HINSTANCE result;
 
     if (!dir) {
-        gui_logf(L"打开游戏目录失败：目录无效。");
-        MessageBoxW(g_hwnd, L"游戏目录无效。", L"MCLC", MB_ICONERROR);
+        gui_logf(L"打开游戏目录失败：目录无效");
+        MessageBoxW(g_hwnd, L"游戏目录无效", L"MCLC", MB_ICONERROR);
         return;
     }
     mkdir_p(dir);
     gui_logf(L"打开游戏目录：%ls", dir);
     result = ShellExecuteW(g_hwnd, L"open", dir, NULL, NULL, SW_SHOWNORMAL);
     if ((INT_PTR)result <= 32) {
-        gui_logf(L"打开游戏目录失败，ShellExecute 返回 %lld。",
+        gui_logf(L"打开游戏目录失败，ShellExecute 返回 %lld",
                  (long long)(INT_PTR)result);
-        MessageBoxW(g_hwnd, L"无法打开游戏目录。", L"MCLC", MB_ICONERROR);
+        MessageBoxW(g_hwnd, L"无法打开游戏目录", L"MCLC", MB_ICONERROR);
     }
     free(dir);
 }
@@ -2058,7 +2058,7 @@ static void export_log(void)
     FILE *file;
     int ok = 0;
 
-    gui_logf(L"用户点击导出日志。");
+    gui_logf(L"用户点击导出日志");
     GetLocalTime(&now);
     swprintf(path, MAX_PATH, L"mclc-log-%04u%02u%02u-%02u%02u%02u.log",
              (unsigned)now.wYear, (unsigned)now.wMonth, (unsigned)now.wDay,
@@ -2076,7 +2076,7 @@ static void export_log(void)
     dialog.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST |
                    OFN_HIDEREADONLY;
     if (!GetSaveFileNameW(&dialog)) {
-        gui_logf(L"用户取消导出日志。");
+        gui_logf(L"用户取消导出日志");
         return;
     }
     {
@@ -2113,10 +2113,10 @@ static void export_log(void)
 
     if (ok) {
         gui_logf(L"日志已导出：%ls", path);
-        set_status(L"日志已导出。");
+        set_status(L"日志已导出");
     } else {
         gui_logf(L"日志导出失败：%ls", path);
-        MessageBoxW(g_hwnd, L"无法写入日志文件。", L"MCLC", MB_ICONERROR);
+        MessageBoxW(g_hwnd, L"无法写入日志文件", L"MCLC", MB_ICONERROR);
     }
 }
 
@@ -2144,10 +2144,10 @@ static int start_job(GuiJob *job, const wchar_t *status)
     if (!thread) {
         InterlockedExchange(&g_running, 0);
         set_busy(FALSE);
-        set_status(L"无法创建后台线程。");
-        gui_logf(L"后台任务启动失败：无法创建线程。");
+        set_status(L"无法创建后台线程");
+        gui_logf(L"后台任务启动失败：无法创建线程");
         free_job(job);
-        MessageBoxW(g_hwnd, L"无法创建后台线程。", L"MCLC", MB_ICONERROR);
+        MessageBoxW(g_hwnd, L"无法创建后台线程", L"MCLC", MB_ICONERROR);
         return 0;
     }
     CloseHandle(thread);
@@ -2219,14 +2219,14 @@ static GuiJob *base_job(int kind)
     job->kind = kind;
     job->game_dir = get_game_dir_value();
     if (!job->game_dir) {
-        gui_logf(L"任务失败：游戏目录无效。");
-        MessageBoxW(g_hwnd, L"游戏目录无效。", L"MCLC", MB_ICONERROR);
+        gui_logf(L"任务失败：游戏目录无效");
+        MessageBoxW(g_hwnd, L"游戏目录无效", L"MCLC", MB_ICONERROR);
         free_job(job);
         return NULL;
     }
     if (mkdir_p(job->game_dir) != 0) {
-        gui_logf(L"任务失败：无法创建游戏目录 %ls。", job->game_dir);
-        MessageBoxW(g_hwnd, L"无法创建游戏目录。", L"MCLC", MB_ICONERROR);
+        gui_logf(L"任务失败：无法创建游戏目录 %ls", job->game_dir);
+        MessageBoxW(g_hwnd, L"无法创建游戏目录", L"MCLC", MB_ICONERROR);
         free_job(job);
         return NULL;
     }
@@ -2242,8 +2242,8 @@ static GuiJob *base_job(int kind)
 
     profile = current_profile();
     if (!profile) {
-        gui_logf(L"启动失败：没有可用的用户名。");
-        MessageBoxW(g_hwnd, L"请先在“用户名”中创建一个用户名。",
+        gui_logf(L"启动失败：没有可用的用户名");
+        MessageBoxW(g_hwnd, L"请先在“用户名”中创建一个用户名",
                     L"MCLC", MB_ICONWARNING);
         free_job(job);
         return NULL;
@@ -2251,8 +2251,8 @@ static GuiJob *base_job(int kind)
     job->username = wide_to_utf8(profile->name);
     job->uuid = wide_to_utf8(profile->uuid);
     if (!job->username || !job->uuid) {
-        gui_logf(L"任务失败：用户名或 UUID 编码无效。");
-        MessageBoxW(g_hwnd, L"用户名或 UUID 编码无效。", L"MCLC",
+        gui_logf(L"任务失败：用户名或 UUID 编码无效");
+        MessageBoxW(g_hwnd, L"用户名或 UUID 编码无效", L"MCLC",
                     MB_ICONERROR);
         free_job(job);
         return NULL;
@@ -2271,8 +2271,8 @@ static GuiJob *base_job(int kind)
                         &job->jvm_count, NULL) != 0 ||
         split_args_utf8(g_settings.game_args, &job->game_args,
                         &job->game_count, NULL) != 0) {
-        gui_logf(L"启动失败：JVM/游戏参数解析失败。");
-        MessageBoxW(g_hwnd, L"JVM 或游戏参数格式无效。", L"MCLC",
+        gui_logf(L"启动失败：JVM/游戏参数解析失败");
+        MessageBoxW(g_hwnd, L"JVM 或游戏参数格式无效", L"MCLC",
                     MB_ICONERROR);
         free_job(job);
         return NULL;
@@ -2295,8 +2295,8 @@ static void start_launch(void)
     }
     id = get_selected_version_id();
     if (!id) {
-        gui_logf(L"启动失败：未选择版本。");
-        MessageBoxW(g_hwnd, L"请选择或输入版本号。", L"MCLC", MB_ICONWARNING);
+        gui_logf(L"启动失败：未选择版本");
+        MessageBoxW(g_hwnd, L"请选择或输入版本号", L"MCLC", MB_ICONWARNING);
         free_job(job);
         return;
     }
@@ -2344,8 +2344,8 @@ static void start_download(const char *version_id, const char *json_url,
         free(wide_id);
     }
     if (!create_progress_window(version_id)) {
-        gui_logf(L"下载失败：无法创建进度窗口。");
-        MessageBoxW(g_hwnd, L"无法创建下载进度窗口。", L"MCLC", MB_ICONERROR);
+        gui_logf(L"下载失败：无法创建进度窗口");
+        MessageBoxW(g_hwnd, L"无法创建下载进度窗口", L"MCLC", MB_ICONERROR);
         free_job(job);
         return;
     }
@@ -2601,7 +2601,7 @@ static LRESULT CALLBACK picker_proc(HWND hwnd, UINT message,
                 SetWindowTextW(state->status, message);
                 gui_logf(L"版本清单加载失败：%ls",
                          detail ? detail : L"未知错误");
-                set_status(L"获取版本清单失败。");
+                set_status(L"获取版本清单失败");
                 free(detail);
             }
             remote_manifest_free(&result->manifest);
@@ -2615,9 +2615,9 @@ static LRESULT CALLBACK picker_proc(HWND hwnd, UINT message,
         state->manifest_ready = 1;
         EnableWindow(state->category, TRUE);
         picker_fill_versions(state);
-        gui_logf(L"版本清单加载完成，共 %zu 个版本。",
+        gui_logf(L"版本清单加载完成，共 %zu 个版本",
                  state->manifest.count);
-        set_status(L"请选择要下载的版本。");
+        set_status(L"请选择要下载的版本");
         SetFocus(state->category);
         free(result->error);
         free(result);
@@ -2690,8 +2690,8 @@ static void open_download_picker(void)
     }
     gui_logf(L"用户点击下载游戏。");
     if (InterlockedCompareExchange(&g_picker_loading, 1, 0) != 0) {
-        gui_logf(L"版本清单仍在加载，已忽略本次请求。");
-        set_status(L"版本清单正在加载，请稍候。");
+        gui_logf(L"版本清单仍在加载，已忽略本次请求");
+        set_status(L"版本清单正在加载。请稍候。");
         return;
     }
 
@@ -2705,7 +2705,7 @@ static void open_download_picker(void)
     if (!RegisterClassW(&wc) &&
         GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
         InterlockedExchange(&g_picker_loading, 0);
-        MessageBoxW(g_hwnd, L"无法创建下载版本窗口。", L"MCLC",
+        MessageBoxW(g_hwnd, L"无法创建下载版本窗口", L"MCLC",
                     MB_ICONERROR);
         return;
     }
@@ -2734,8 +2734,8 @@ static void open_download_picker(void)
         InterlockedExchange(&g_picker_loading, 0);
         EnableWindow(g_hwnd, TRUE);
         SetForegroundWindow(g_hwnd);
-        set_status(L"无法创建下载版本窗口。");
-        MessageBoxW(g_hwnd, L"无法创建下载版本窗口。", L"MCLC",
+        set_status(L"无法创建下载版本窗口");
+        MessageBoxW(g_hwnd, L"无法创建下载版本窗口", L"MCLC",
                     MB_ICONERROR);
         return;
     }
@@ -2746,11 +2746,11 @@ static void open_download_picker(void)
         NULL, 0, picker_load_thread, (void *)(uintptr_t)state.hwnd, 0, NULL);
     if (!thread) {
         InterlockedExchange(&g_picker_loading, 0);
-        gui_logf(L"无法启动版本清单加载线程。");
-        SetWindowTextW(state.status, L"无法启动版本清单加载线程。");
-        set_status(L"无法获取版本清单。");
+        gui_logf(L"无法启动版本清单加载线程");
+        SetWindowTextW(state.status, L"无法启动版本清单加载线程");
+        set_status(L"无法获取版本清单");
     } else {
-        gui_logf(L"版本选择窗口已打开，正在后台加载版本清单。");
+        gui_logf(L"版本选择窗口已打开，正在后台加载版本清单");
         CloseHandle(thread);
     }
 
@@ -2786,8 +2786,8 @@ static void open_download_picker(void)
         start_download(state.selected, state.selected_url,
                        state.selected_sha1);
     } else if (!quit) {
-        gui_logf(L"用户取消下载游戏。");
-        set_status(L"已取消下载。");
+        gui_logf(L"用户取消下载");
+        set_status(L"已取消下载");
     }
     remote_manifest_free(&state.manifest);
     free(state.selected);
@@ -2941,17 +2941,17 @@ static LRESULT CALLBACK new_user_proc(HWND hwnd, UINT message,
             wchar_t *final_uuid = NULL;
             char generated[37];
             if (!*name) {
-                MessageBoxW(hwnd, L"用户名不能为空。", L"MCLC",
+                MessageBoxW(hwnd, L"用户名不能为空", L"MCLC",
                             MB_ICONWARNING);
             } else if (g_profile_count >= MCLC_MAX_PROFILES) {
-                MessageBoxW(hwnd, L"用户名数量已达上限。", L"MCLC",
+                MessageBoxW(hwnd, L"用户名数量已达上限", L"MCLC",
                             MB_ICONWARNING);
             } else {
                 name_utf8 = wide_to_utf8(name);
                 if (*uuid) {
                     if (!uuid_is_valid(uuid)) {
                         MessageBoxW(hwnd,
-                                    L"UUID 格式无效，应包含 32 个十六进制字符。",
+                                    L"UUID 格式无效，应包含 32 个十六进制字符",
                                     L"MCLC", MB_ICONWARNING);
                         free(name);
                         free(uuid);
@@ -2969,7 +2969,7 @@ static LRESULT CALLBACK new_user_proc(HWND hwnd, UINT message,
                     final_uuid = utf8_to_wide(generated);
                 }
                 if (!name_utf8 || !final_uuid) {
-                    MessageBoxW(hwnd, L"用户名或 UUID 编码无效。", L"MCLC",
+                    MessageBoxW(hwnd, L"用户名或 UUID 编码无效", L"MCLC",
                                 MB_ICONERROR);
                 } else {
                     g_profiles = (Profile *)xrealloc(
@@ -3148,7 +3148,7 @@ static LRESULT CALLBACK user_proc(HWND hwnd, UINT message,
 static void open_user_window(void)
 {
     WNDCLASSW wc;
-    gui_logf(L"用户点击用户名设置。");
+    gui_logf(L"用户点击用户名设置");
     UserState state;
     RECT owner;
     RECT rect;
@@ -3206,7 +3206,7 @@ static void open_user_window(void)
     if (quit) {
         return;
     }
-    set_status(L"用户名设置已更新。");
+    set_status(L"用户名设置已更新");
 }
 
 /* ------------------------------------------------------------------ */
@@ -3401,13 +3401,13 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT message,
             if (mode == 1 && (w < 320 || w > 16384 ||
                               h < 240 || h > 16384)) {
                 MessageBoxW(hwnd,
-                            L"自定义窗口大小必须是 320×240 到 16384×16384。",
+                            L"自定义窗口大小必须是 320×240 到 16384×16384",
                             L"MCLC", MB_ICONWARNING);
                 return 0;
             }
             if (memory < 256 || memory > 65536) {
                 MessageBoxW(hwnd,
-                            L"内存必须是 256 到 65536 之间的 MB 数。",
+                            L"内存必须是 256 到 65536 之间的 MB 数",
                             L"MCLC", MB_ICONWARNING);
                 return 0;
             }
@@ -3427,7 +3427,7 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT message,
             set_setting_from_control(&g_settings.game_args, state->game);
             set_setting_from_control(&g_settings.pre_launch, state->pre);
             save_config();
-            gui_logf(L"设置已保存。");
+            gui_logf(L"设置已保存");
             DestroyWindow(hwnd);
             return 0;
         }
@@ -3451,7 +3451,7 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT message,
 static void open_settings_window(void)
 {
     WNDCLASSW wc;
-    gui_logf(L"用户点击设置。");
+    gui_logf(L"用户点击设置");
     SettingsState state;
     RECT owner;
     RECT rect;
@@ -3507,7 +3507,7 @@ static void open_settings_window(void)
     EnableWindow(g_hwnd, TRUE);
     SetForegroundWindow(g_hwnd);
     if (!quit) {
-        set_status(L"设置已更新。");
+        set_status(L"设置已更新");
     }
 }
 
@@ -3529,7 +3529,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT message,
             }
         }
         refresh_log_view();
-        gui_logf(L"MCLC GUI 已就绪。");
+        gui_logf(L"MCLC GUI 已就绪");
         SetTimer(hwnd, 1, 200, NULL);
         return 0;
 
@@ -3549,7 +3549,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT message,
             open_download_picker();
             break;
         case ID_REFRESH:
-            gui_logf(L"用户点击刷新本地版本列表。");
+            gui_logf(L"用户点击刷新本地版本列表");
             refresh_versions();
             break;
         case ID_BROWSE_GAME:
@@ -3637,9 +3637,9 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT message,
                 select_version_by_id(installed);
             }
             if (kind == JOB_DOWNLOAD) {
-                set_status(L"下载与校验完成。");
+                set_status(L"下载与校验完成");
             } else {
-                set_status(L"Minecraft 已启动。");
+                set_status(L"Minecraft 已启动");
             }
         } else {
             set_status(L"操作失败，请查看日志。");
@@ -3658,7 +3658,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT message,
         return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
 
     case WM_CLOSE:
-        gui_logf(L"用户尝试关闭主窗口。");
+        gui_logf(L"用户尝试关闭主窗口");
         if (InterlockedCompareExchange(&g_running, 0, 0) != 0) {
             if (MessageBoxW(hwnd,
                             L"任务正在进行。关闭窗口会中断任务，确定退出吗？",
@@ -3734,7 +3734,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line,
     window_class.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
     window_class.lpszClassName = MCLC_GUI_CLASS;
     if (!RegisterClassW(&window_class)) {
-        MessageBoxW(NULL, L"无法注册窗口类。", L"MCLC", MB_ICONERROR);
+        MessageBoxW(NULL, L"无法注册窗口类", L"MCLC", MB_ICONERROR);
         if (com_ready) CoUninitialize();
         return 1;
     }
@@ -3757,7 +3757,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line,
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         x, y, width, height, NULL, NULL, instance, NULL);
     if (!g_hwnd) {
-        MessageBoxW(NULL, L"无法创建主窗口。", MCLC_GUI_TITLE, MB_ICONERROR);
+        MessageBoxW(NULL, L"无法创建主窗口", MCLC_GUI_TITLE, MB_ICONERROR);
         if (com_ready) CoUninitialize();
         return 1;
     }
