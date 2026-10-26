@@ -1,12 +1,44 @@
 #include "install.h"
 #include "hash.h"
 #include "http.h"
+#include "progress.h"
 #include "util.h"
 #include "zip.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+static char *install_win32_error_text(DWORD code)
+{
+    wchar_t *buffer = NULL;
+    DWORD n;
+    char *text;
+    size_t len;
+
+    n = FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER |
+                           FORMAT_MESSAGE_FROM_SYSTEM |
+                           FORMAT_MESSAGE_IGNORE_INSERTS,
+                       NULL, code, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                       (LPWSTR)&buffer, 0, NULL);
+    if (!n || !buffer) {
+        return format_utf8("Windows 错误 %lu", (unsigned long)code);
+    }
+    while (n > 0 && (buffer[n - 1] == L'\r' || buffer[n - 1] == L'\n' ||
+                     buffer[n - 1] == L' ')) {
+        buffer[--n] = L'\0';
+    }
+    text = wide_to_utf8(buffer);
+    LocalFree(buffer);
+    if (!text) {
+        return format_utf8("Windows 错误 %lu", (unsigned long)code);
+    }
+    len = strlen(text);
+    if (len > 200) {
+        text[200] = '\0';
+    }
+    return text;
+}
 
 static wchar_t *join_utf8(const wchar_t *base, const char *relative)
 {
@@ -72,6 +104,7 @@ static int ensure_file(const wchar_t *path, const char *url, const char *sha1,
 {
     int exists;
     int needs_download = 0;
+    int bad_existing = 0;
     wchar_t *wide_url;
     char actual[41];
 
@@ -87,10 +120,12 @@ static int ensure_file(const wchar_t *path, const char *url, const char *sha1,
         int64_t actual_size = path_size(path);
         if (size > 0 && actual_size != size) {
             needs_download = 1;
-            if (!quiet) printf("  ! 大小不符，重新下载: %s\n", label);
+            bad_existing = 1;
+            if (!quiet) printf("  ! 大小不符，删除并重新下载: %s\n", label);
         } else if (verify && sha1 && *sha1 && !sha1_matches(path, sha1)) {
             needs_download = 1;
-            if (!quiet) printf("  ! SHA-1 不符，重新下载: %s\n", label);
+            bad_existing = 1;
+            if (!quiet) printf("  ! SHA-1 不符，删除并重新下载: %s\n", label);
         } else {
             return 0;
         }
@@ -109,6 +144,28 @@ static int ensure_file(const wchar_t *path, const char *url, const char *sha1,
     if (!wide_url) {
         set_error(error, "下载 URL 编码无效: %s", url);
         return -1;
+    }
+    if (bad_existing) {
+        DWORD delete_error = ERROR_SUCCESS;
+        if (!DeleteFileW(path)) {
+            delete_error = GetLastError();
+            if (delete_error == ERROR_ACCESS_DENIED) {
+                SetFileAttributesW(path, FILE_ATTRIBUTE_NORMAL);
+                if (DeleteFileW(path)) {
+                    delete_error = ERROR_SUCCESS;
+                } else {
+                    delete_error = GetLastError();
+                }
+            }
+        }
+        if (delete_error != ERROR_SUCCESS &&
+            delete_error != ERROR_FILE_NOT_FOUND) {
+            char *msg = install_win32_error_text(delete_error);
+            set_error(error, "无法删除损坏文件 %s: %s", label, msg);
+            free(msg);
+            free(wide_url);
+            return -1;
+        }
     }
     if (!show_progress && !quiet) {
         printf("  + %s\n", label);
@@ -250,6 +307,7 @@ static int install_assets(Version *version, const wchar_t *game_dir,
 
     total = json_object_size(objects);
     printf("  [资源] %zu 个对象\n", total);
+    mclc_progress_report(30, "处理资源文件");
     for (m = objects->u.object.head; m; m = m->next) {
         JsonValue *object = m->value;
         const char *hash;
@@ -263,6 +321,10 @@ static int install_assets(Version *version, const wchar_t *game_dir,
         int64_t actual_size;
 
         processed++;
+        if (total && (processed % 25 == 0 || processed == total)) {
+            int percent = 30 + (int)(processed * 60 / total);
+            mclc_progress_report(percent, "处理资源文件");
+        }
         if (object->type != JSON_OBJECT) {
             continue;
         }
@@ -315,6 +377,7 @@ static int install_assets(Version *version, const wchar_t *game_dir,
         printf("\r  [资源] %zu/%zu（新下载 %zu）\n", processed, total,
                downloaded);
     }
+    mclc_progress_report(90, "资源处理完成");
 
     virtual_assets = json_get_bool(index, "virtual", 0);
     map_to_resources = json_get_bool(index, "map_to_resources", 0);
@@ -470,13 +533,18 @@ int install_version(Version *version, const wchar_t *game_dir, int verify,
     }
     free(client_id_wide);
 
+    mclc_progress_report(0, "检查客户端 jar");
     printf("[*] 检查客户端 jar...\n");
+    mclc_progress_begin_span(0, 8);
     if (ensure_file(client_path, version->client.url, version->client.sha1,
                     version->client.size, verify, 1, 0,
                     "客户端 jar", error) != 0) {
+        mclc_progress_end_span();
         goto fail;
     }
+    mclc_progress_end_span();
 
+    mclc_progress_report(10, "检查游戏库");
     printf("[*] 检查 %d 个版本层、游戏库与本地库...\n",
            version->layer_count);
     for (i = 0; i < version->layer_count; i++) {
@@ -536,12 +604,14 @@ int install_version(Version *version, const wchar_t *game_dir, int verify,
     }
     printf("  natives: %d 个本地库已解压到 versions\\%s\\natives\n",
            native_count, version->id);
+    mclc_progress_report(25, "游戏库检查完成");
 
     printf("[*] 检查资源文件（首次启动可能较慢）...\n");
     if (install_assets(version, game_dir, verify, error) != 0) {
         goto fail;
     }
 
+    mclc_progress_report(92, "检查日志配置");
     if (version->logging_id) {
         wchar_t *log_path = join_utf8(log_dir, version->logging_id);
         if (!log_path) {
@@ -564,6 +634,7 @@ int install_version(Version *version, const wchar_t *game_dir, int verify,
     free(assets_dir);
     free(log_dir);
     free(client_path);
+    mclc_progress_report(100, "下载与校验完成");
     return 0;
 
 fail:

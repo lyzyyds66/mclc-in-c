@@ -1,4 +1,5 @@
 #include "http.h"
+#include "progress.h"
 #include "util.h"
 
 #include <windows.h>
@@ -361,6 +362,7 @@ int http_download(const wchar_t *url, const wchar_t *destination,
         name = wcsrchr(destination, L'\\');
         name = name ? name + 1 : destination;
         name_utf8 = wide_to_utf8(name);
+        mclc_progress_report_file(0, name_utf8 ? name_utf8 : "下载文件");
         printf("  下载 %s", name_utf8 ? name_utf8 : "文件");
         fflush(stdout);
     }
@@ -387,6 +389,11 @@ int http_download(const wchar_t *url, const wchar_t *destination,
                 last_update = now;
                 if (progress_total > 0) {
                     double pct = (double)total * 100.0 / (double)progress_total;
+                    int whole = (int)(pct + 0.5);
+                    if (whole < 0) whole = 0;
+                    if (whole > 100) whole = 100;
+                    mclc_progress_report_file(
+                        whole, name_utf8 ? name_utf8 : "下载文件");
                     printf("\r  下载 %s  %5.1f%%  (%.1f/%.1f MB)",
                            name_utf8 ? name_utf8 : "文件", pct,
                            (double)total / 1048576.0,
@@ -437,6 +444,10 @@ cleanup:
     }
     if (rc != 0) {
         DeleteFileW(temporary);
+    }
+    if (rc == 0 && show_progress) {
+        mclc_progress_report_file(100,
+                                  name_utf8 ? name_utf8 : "下载文件");
     }
     if (show_progress) {
         if (rc == 0) {

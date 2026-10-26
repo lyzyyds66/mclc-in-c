@@ -20,6 +20,7 @@ set(MCLC_CORE
     src/install.c
     src/remote.c
     src/launch.c
+    src/progress.c
 )
 
 add_executable(mclc src/main.c ${MCLC_CORE})
@@ -41,7 +42,7 @@ foreach(target mclc mclc_gui)
     endif()
 endforeach()
 
-target_link_libraries(mclc_gui PRIVATE comdlg32 ole32 user32 gdi32)
+target_link_libraries(mclc_gui PRIVATE comdlg32 ole32 user32 gdi32 comctl32)
 
 if(MINGW)
     # mclc_gui is a WIN32 target, so CMake adds -mwindows automatically.

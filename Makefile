@@ -10,10 +10,11 @@ CFLAGS  ?= -std=gnu11 -O2 -Wall -Wextra -Wpedantic
 CPPFLAGS = -D_CRT_SECURE_NO_WARNINGS -DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN
 LDFLAGS = -static -static-libgcc
 LDLIBS  = -lwinhttp -lshell32
-GUI_LIBS = -lwinhttp -lshell32 -lcomdlg32 -lole32 -luser32 -lgdi32
+GUI_LIBS = -lwinhttp -lshell32 -lcomdlg32 -lole32 -luser32 -lgdi32 -lcomctl32
 
 CORE_SRC = src/util.c src/json.c src/hash.c src/http.c src/inflate.c \
-           src/zip.c src/version.c src/install.c src/remote.c src/launch.c
+           src/zip.c src/version.c src/install.c src/remote.c src/launch.c \
+           src/progress.c
 CORE_OBJ = $(CORE_SRC:.c=.o)
 CLI_OBJ = src/main.o $(CORE_OBJ)
 GUI_OBJ = src/gui.o $(CORE_OBJ)

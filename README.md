@@ -17,8 +17,10 @@ UUID、SHA-1 校验、增量补全以及 Java 运行时查找。仓库包含 Git
 
 ## 功能
 
-- 原生 Win32 图形界面（`mclc_gui.exe`）：版本选择、用户名、内存、Java 路径、
-  游戏目录、演示模式、SHA-1 校验和实时日志
+- 原生 Win32 图形界面（`mclc_gui.exe`）：版本选择、用户名、内存、Java 多版本
+  下拉框、游戏目录、演示模式和实时日志
+- “下载游戏”窗口按正式版、预览版、远古版、愚人节版分类选择版本
+- 独立下载进度窗口；已有文件按 SHA-1 校验，不一致时重新下载
 - GUI 使用后台线程执行下载和启动，界面不会卡死；不创建控制台窗口
 - 保留命令行版（`mclc.exe`）用于自动化、CI 和排错
 - 从 `%APPDATA%\.minecraft` 读取/安装版本，也支持 `--dir` 指定任意游戏目录
@@ -27,7 +29,8 @@ UUID、SHA-1 校验、增量补全以及 Java 运行时查找。仓库包含 Git
 - 下载客户端 jar、libraries、natives、logging 配置和资源索引
 - 下载资源对象到 `assets/objects/xx/<sha1>`，支持旧版的 `virtual` /
   `map_to_resources` 资源映射
-- 使用 SHA-1 校验下载内容，`--verify` 可以校验已有文件
+- 下载游戏时按 SHA-1 校验已有文件，不一致就删除并重新下载
+- 命令行可用 `--verify` 对已有文件做完整校验
 - 解析旧版 `minecraftArguments` 和新版 `arguments.game` / `arguments.jvm`
 - 还原版本继承（`inheritsFrom`），支持常见的 Forge / Fabric / NeoForge 版本
 - 生成原版离线 UUID（`UUID.nameUUIDFromBytes("OfflinePlayer:<name>")`）
@@ -53,13 +56,13 @@ build.bat
 cl /nologo /std:c11 /O2 /utf-8 /MT /D_CRT_SECURE_NO_WARNINGS /DUNICODE /D_UNICODE ^
   src\main.c src\util.c src\json.c src\hash.c src\http.c src\inflate.c ^
   src\zip.c src\version.c src\install.c src\remote.c src\launch.c ^
-  /Fe:mclc.exe /link winhttp.lib shell32.lib
+  src\progress.c /Fe:mclc.exe /link winhttp.lib shell32.lib
 
 cl /nologo /std:c11 /O2 /utf-8 /MT /D_CRT_SECURE_NO_WARNINGS /DUNICODE /D_UNICODE ^
   src\gui.c src\util.c src\json.c src\hash.c src\http.c src\inflate.c ^
   src\zip.c src\version.c src\install.c src\remote.c src\launch.c ^
-  /Fe:mclc_gui.exe /link /SUBSYSTEM:WINDOWS winhttp.lib shell32.lib ^
-  comdlg32.lib ole32.lib user32.lib gdi32.lib
+  src\progress.c /Fe:mclc_gui.exe /link /SUBSYSTEM:WINDOWS winhttp.lib shell32.lib ^
+  comdlg32.lib ole32.lib user32.lib gdi32.lib comctl32.lib
 ```
 
 ### 2. MinGW-w64 / MSYS2
@@ -74,13 +77,13 @@ make
 gcc -std=gnu11 -O2 -Wall -Wextra -D_CRT_SECURE_NO_WARNINGS -DUNICODE -D_UNICODE \
     src/main.c src/util.c src/json.c src/hash.c src/http.c src/inflate.c \
     src/zip.c src/version.c src/install.c src/remote.c src/launch.c \
-    -static -static-libgcc -lwinhttp -lshell32 -o mclc.exe
+    src/progress.c -static -static-libgcc -lwinhttp -lshell32 -o mclc.exe
 
 gcc -std=gnu11 -O2 -Wall -Wextra -D_CRT_SECURE_NO_WARNINGS -DUNICODE -D_UNICODE \
     src/gui.c src/util.c src/json.c src/hash.c src/http.c src/inflate.c \
     src/zip.c src/version.c src/install.c src/remote.c src/launch.c \
-    -mwindows -static -static-libgcc -lwinhttp -lshell32 -lcomdlg32 -lole32 \
-    -luser32 -lgdi32 -o mclc_gui.exe
+    src/progress.c -mwindows -static -static-libgcc -lwinhttp -lshell32 -lcomdlg32 -lole32 \
+    -luser32 -lgdi32 -lcomctl32 -o mclc_gui.exe
 ```
 
 ### 3. CMake
@@ -161,28 +164,51 @@ mclc_gui.exe
 窗口里可以设置：
 
 - **游戏目录**：默认 `%APPDATA%\.minecraft`，可浏览选择
-- **版本**：下拉列表显示本地版本，也可以直接输入官方版本号
+- **版本**：下拉列表显示本地已下载版本，也可以手动输入已安装的版本号
 - **用户名**：离线玩家名
 - **内存 MB**：最大 Java 堆内存
-- **Java**：留空自动查找，或浏览选择 `java.exe`
-- **演示模式 / 校验 SHA-1**
-- **启动游戏**：自动补齐缺失文件并启动
-- **安装最新正式版**：下载 Mojang 最新正式版
+- **Java**：下拉列表自动列出本机检测到的 Java，格式为
+  `Java 17.0.9 (C:\...\java.exe)`；也可以用“浏览...”手动添加
+- **演示模式**
+- **下载游戏**：打开版本选择窗口
+- **启动游戏**：只启动已下载的版本，不再检查或下载文件
 - **打开游戏目录**
 - **日志**：显示下载、校验、安装和启动过程，不需要额外控制台
 
 图形界面在后台线程执行下载和安装，因此界面不会卡死。启动 Java 时使用
 `CREATE_NO_WINDOW`，不会弹出命令行窗口。
 
+### 下载游戏
+
+点击“下载游戏”后会立即弹出独立窗口，版本清单在后台加载，主界面不会因网络
+请求而卡死。
+
+1. 左侧/顶部选择版本类型：
+   - **正式版**
+   - **预览版**
+   - **远古版**（old_beta / old_alpha）
+   - **愚人节版**
+2. 在列表中选中具体版本
+3. 点右下角“下载”
+4. 点右上角叉号取消，不会开始下载
+
+确认后会弹出下载进度窗口，显示当前文件/阶段和进度条。下载期间：
+
+- 已存在的文件会按云端 SHA-1 校验
+- 大小或 SHA-1 不一致的文件会先删除，再重新下载
+- 新下载的文件也会再次校验
+- 进度窗口不能关闭，下载完成后自动关闭
+
+下载完成后回到主窗口，选中刚下载的版本后点“启动游戏”即可。启动流程不再做
+“检查并下载”，只负责加载版本并启动。
+
 典型流程：
 
 1. 双击 `mclc_gui.exe`
 2. 确认游戏目录
-3. 点“安装最新正式版”，或直接在版本框输入 `1.21.4`
-4. 点“启动游戏”
-
-如果输入的是本地没有的官方版本号，程序会先从 Mojang 下载版本 JSON，再补全客户端
-和资源。
+3. 点“下载游戏”，选择版本并确认
+4. 下载完成后在版本下拉框中选择该版本
+5. 点“启动游戏”
 
 ### 命令行（可选）
 
@@ -231,7 +257,8 @@ mclc.exe launch 1.20.1 --jvm -Dorg.lwjgl.util.Debug=true
 
 ### 第一次运行
 
-图形界面：双击 `mclc_gui.exe`，点“安装最新正式版”，安装完成后选择版本并启动。
+图形界面：双击 `mclc_gui.exe`，点“下载游戏”，选择版本类型和具体版本后确认。
+下载完成后在版本下拉框中选择该版本并启动。
 
 命令行：
 
@@ -271,9 +298,18 @@ MCLC 使用离线模式：
 5. `Program Files` 下的常见 JDK 目录
 6. `PATH` 中的 `java.exe`
 
+图形界面启动时会扫描这些位置，把检测到的 Java 加入下拉框，格式如：
+
+```text
+Java 17.0.9 (C:\Program Files\Eclipse Adoptium\jdk-17.0.9\bin\java.exe)
+```
+
+第一项是“自动选择（推荐）”。也可以点“浏览...”手动加入其他 `java.exe`。
+如果本机有多个 Java，下拉框会分别列出。
+
 版本 JSON 里的 `javaVersion.majorVersion` 只用于提示和选择目录。MCLC 不会下载 Java
 运行时，也不会严格校验 Java 主版本；如果启动时报 `UnsupportedClassVersionError`，
-请用 `--java` 指向正确版本，例如：
+请在 Java 下拉框中选择正确版本，或用 CLI 的 `--java` 指向正确版本，例如：
 
 - Minecraft 1.17–1.20.4：Java 17
 - Minecraft 1.20.5+：Java 21
@@ -318,6 +354,7 @@ MCLC 不修改官方启动器的 `launcher_profiles.json`，可以与官方启�
 | `src/install.c` | 客户端/库/资源/natives 安装与校验 |
 | `src/remote.c` | Mojang 版本清单和版本 JSON 下载 |
 | `src/launch.c` | 参数拼装、Java 查找、`CreateProcessW` 启动 |
+| `src/progress.c` | 下载/校验进度回调 |
 
 启动流程：
 
@@ -350,12 +387,13 @@ CLI 和 GUI 共用同一套 `Version` / `install_version` / `launch_version` 核
 
 **`无法加载版本 ...`**
 
-确认 `versions\<id>\<id>.json` 存在；可以先在图形界面点“安装最新正式版”，或执行
-`mclc.exe install <id>`。
+确认 `versions\<id>\<id>.json` 存在；可以先在图形界面点“下载游戏”完成安装，
+或执行 `mclc.exe install <id>`。
 
 **`找不到指定的 Java` / `UnsupportedClassVersionError`**
 
-在图形界面的 Java 输入框选择正确的 `java.exe`，或安装对应 JDK。命令行可用
+在图形界面的 Java 下拉框选择正确的版本，或点“浏览...”添加 `java.exe`，也可以安装
+对应 JDK。命令行可用
 `--java`。
 
 **`HTTP 404`**

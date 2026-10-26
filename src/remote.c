@@ -177,7 +177,8 @@ int remote_install_json(const wchar_t *game_dir, const RemoteVersion *entry,
             free(path);
             return 0;
         }
-        printf("  ! 版本 JSON SHA-1 不符，重新下载: %s\n", entry->id);
+        printf("  ! 版本 JSON SHA-1 不符，删除并重新下载: %s\n", entry->id);
+        DeleteFileW(path);
     }
     url = utf8_to_wide(entry->url);
     if (!url) {
