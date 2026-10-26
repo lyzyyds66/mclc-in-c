@@ -9,6 +9,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The GUI captures stderr; route all progress text there. */
+#define printf(...) fprintf(stderr, __VA_ARGS__)
+
 static char *install_win32_error_text(DWORD code)
 {
     wchar_t *buffer = NULL;

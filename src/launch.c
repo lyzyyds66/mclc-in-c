@@ -3,9 +3,14 @@
 #include "util.h"
 
 #include <ctype.h>
+#include <process.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* The GUI captures stderr; route all progress text there. */
+#define printf(...) fprintf(stderr, __VA_ARGS__)
 
 typedef struct {
     char **items;
@@ -565,6 +570,16 @@ static int build_arguments(const LaunchOptions *options, Version *version,
     vars_add(&vars, "path", log_utf8 ? log_utf8 : "");
 
     args_add(jvm, memory_buf);
+    if (custom_info_utf8 && *custom_info_utf8) {
+        if (!args_has_prefix(jvm, "-Dminecraft.launcher.brand=")) {
+            args_add_owned(jvm, format_utf8(
+                "-Dminecraft.launcher.brand=%s", custom_info_utf8));
+        }
+        if (!args_has_prefix(jvm, "-Dminecraft.launcher.version=")) {
+            args_add_owned(jvm, format_utf8(
+                "-Dminecraft.launcher.version=%s", custom_info_utf8));
+        }
+    }
     for (i = 0; i < version->layer_count; i++) {
         JsonValue *arguments =
             json_get(version->layers[i].root, "arguments");
@@ -614,13 +629,6 @@ static int build_arguments(const LaunchOptions *options, Version *version,
         args_add_owned(jvm, libpath);
     }
 
-    if (options->window_title && *options->window_title) {
-        char *title = wide_to_utf8(options->window_title);
-        if (title) {
-            args_add(game, "--title");
-            args_add_owned(game, title);
-        }
-    }
     if (options->fullscreen) {
         args_add(game, "--fullscreen");
     }
@@ -1041,6 +1049,66 @@ static char *win32_error_text(DWORD code)
                                      (unsigned long)code);
 }
 
+typedef struct {
+    DWORD pid;
+    wchar_t *title;
+} TitleJob;
+
+static BOOL CALLBACK set_game_window_title(HWND hwnd, LPARAM lparam)
+{
+    TitleJob *job = (TitleJob *)lparam;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid == job->pid && IsWindowVisible(hwnd) &&
+        GetWindow(hwnd, GW_OWNER) == NULL) {
+        SetWindowTextW(hwnd, job->title);
+    }
+    return TRUE;
+}
+
+static unsigned __stdcall title_monitor_thread(void *argument)
+{
+    TitleJob *job = (TitleJob *)argument;
+    HANDLE process = OpenProcess(
+        SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, job->pid);
+    int i;
+
+    for (i = 0; i < 600; i++) {
+        EnumWindows(set_game_window_title, (LPARAM)job);
+        if (process &&
+            WaitForSingleObject(process, 0) == WAIT_OBJECT_0) {
+            break;
+        }
+        Sleep(500);
+    }
+    if (process) {
+        CloseHandle(process);
+    }
+    free(job->title);
+    free(job);
+    return 0;
+}
+
+static void start_title_monitor(DWORD pid, const wchar_t *title)
+{
+    TitleJob *job;
+    uintptr_t thread;
+
+    if (!title || !*title) {
+        return;
+    }
+    job = (TitleJob *)xcalloc(1, sizeof(TitleJob));
+    job->pid = pid;
+    job->title = xwcsdup(title);
+    thread = _beginthreadex(NULL, 0, title_monitor_thread, job, 0, NULL);
+    if (thread) {
+        CloseHandle((HANDLE)thread);
+    } else {
+        free(job->title);
+        free(job);
+    }
+}
+
 int launch_version(const LaunchOptions *options, Version *version,
                    char **error)
 {
@@ -1139,6 +1207,7 @@ int launch_version(const LaunchOptions *options, Version *version,
     } else if (options->priority == 2) {
         SetPriorityClass(process.hProcess, HIGH_PRIORITY_CLASS);
     }
+    start_title_monitor(process.dwProcessId, options->window_title);
     printf("[*] 已启动 Minecraft，PID %lu\n",
            (unsigned long)process.dwProcessId);
     if (options->detach) {

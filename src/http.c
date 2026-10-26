@@ -9,6 +9,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The GUI captures stderr; route all progress text there. */
+#define printf(...) fprintf(stderr, __VA_ARGS__)
+
 #ifdef _MSC_VER
 #pragma comment(lib, "winhttp.lib")
 #endif

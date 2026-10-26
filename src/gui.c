@@ -137,6 +137,7 @@ typedef struct {
     int window_mode;   /* 0 default, 1 custom, 2 fullscreen */
     int width;
     int height;
+    int memory_mb;
     wchar_t *jvm_args;
     wchar_t *game_args;
     wchar_t *pre_launch;
@@ -157,7 +158,6 @@ static HWND g_game_dir;
 static HWND g_browse_game;
 static HWND g_version;
 static HWND g_refresh;
-static HWND g_memory;
 static HWND g_user_button;
 static HWND g_settings_button;
 static HWND g_java;
@@ -188,6 +188,7 @@ static size_t g_log_ui_cap;
 static volatile LONG g_log_dirty;
 
 static void gui_logf(const wchar_t *fmt, ...);
+static void apply_font_recursive(HWND parent, HFONT font);
 
 /* ------------------------------------------------------------------ */
 /* Small helpers                                                       */
@@ -328,6 +329,7 @@ static void set_default_settings(void)
     g_settings.window_mode = 0;
     g_settings.width = 854;
     g_settings.height = 480;
+    g_settings.memory_mb = 2048;
     g_settings.window_title = xwcsdup(L"");
     g_settings.custom_info = xwcsdup(L"");
     g_settings.jvm_args = xwcsdup(L"");
@@ -457,6 +459,11 @@ static void load_config(void)
                     } else if (_stricmp(key, "height") == 0) {
                         int h = atoi(value);
                         if (h > 0) g_settings.height = h;
+                    } else if (_stricmp(key, "memory") == 0) {
+                        int m = atoi(value);
+                        if (m >= 256 && m <= 65536) {
+                            g_settings.memory_mb = m;
+                        }
                     } else if (_stricmp(key, "jvm_args") == 0) {
                         wchar_t *w = utf8_to_wide(value);
                         replace_wide(&g_settings.jvm_args, w);
@@ -576,12 +583,14 @@ static void save_config(void)
             "priority=%d\r\n"
             "window_mode=%d\r\n"
             "width=%d\r\n"
-            "height=%d\r\n",
+            "height=%d\r\n"
+            "memory=%d\r\n",
             g_settings.version_isolation,
             g_settings.priority,
             g_settings.window_mode,
             g_settings.width,
-            g_settings.height);
+            g_settings.height,
+            g_settings.memory_mb);
         sb_append(&sb, line);
         free(line);
     }
@@ -1351,6 +1360,7 @@ static LRESULT CALLBACK progress_proc(HWND hwnd, UINT message,
             SendMessageW(g_progress_bar, PBM_SETRANGE32, 0, 100);
             SendMessageW(g_progress_bar, PBM_SETPOS, 0, 0);
         }
+        apply_font_recursive(hwnd, g_font);
         return 0;
 
     case WM_APP_PROGRESS: {
@@ -1747,7 +1757,12 @@ static int job_download(GuiJob *job, char **error)
         free(version_id);
         return -1;
     }
-    printf("[*] 下载 %s（Java %d+）\n", version.id, version.java_major);
+    {
+        wchar_t *wide_id = utf8_to_wide(version.id);
+        gui_logf(L"开始下载 %ls（Java %d+）",
+                 wide_id ? wide_id : L"(未知)", version.java_major);
+        free(wide_id);
+    }
     /*
      * Download mode always verifies existing files. ensure_file() replaces
      * any size/SHA-1 mismatch and verifies every new download again.
@@ -1757,7 +1772,12 @@ static int job_download(GuiJob *job, char **error)
         free(version_id);
         return -1;
     }
-    printf("[完成] %s 已下载并校验。\n", version.id);
+    {
+        wchar_t *wide_id = utf8_to_wide(version.id);
+        gui_logf(L"%ls 已下载并校验。",
+                 wide_id ? wide_id : L"(未知)");
+        free(wide_id);
+    }
     {
         char *copy = xstrdup(version.id);
         char *old = (char *)InterlockedExchangePointer(
@@ -1833,13 +1853,25 @@ static HWND make_label(const wchar_t *text, int x, int y, int width, int height)
     return make_control(L"STATIC", text, SS_LEFT, 0, x, y, width, height, 0);
 }
 
+static BOOL CALLBACK apply_font_proc(HWND hwnd, LPARAM lparam)
+{
+    SendMessageW(hwnd, WM_SETFONT, (WPARAM)lparam, TRUE);
+    return TRUE;
+}
+
+static void apply_font_recursive(HWND parent, HFONT font)
+{
+    if (parent && font) {
+        EnumChildWindows(parent, apply_font_proc, (LPARAM)font);
+    }
+}
+
 static void set_busy(BOOL busy)
 {
     EnableWindow(g_game_dir, !busy);
     EnableWindow(g_browse_game, !busy);
     EnableWindow(g_version, !busy);
     EnableWindow(g_refresh, !busy);
-    EnableWindow(g_memory, !busy);
     EnableWindow(g_java, !busy);
     EnableWindow(g_browse_java, !busy);
     EnableWindow(g_demo, !busy);
@@ -1875,47 +1907,41 @@ static void create_controls(HWND hwnd)
     g_refresh = make_control(L"BUTTON", L"刷新", BS_PUSHBUTTON,
                              0, 648, 54, 96, 26, ID_REFRESH);
 
-    make_label(L"内存 MB", 16, 97, 78, 22);
-    g_memory = make_control(L"EDIT", L"2048",
-                            WS_BORDER | ES_NUMBER | ES_AUTOHSCROLL,
-                            WS_EX_CLIENTEDGE, 100, 94, 100, 26, ID_MEMORY);
-    make_label(L"Java 支持多版本选择", 220, 97, 180, 22);
-
-    make_label(L"Java", 16, 135, 78, 22);
+    make_label(L"Java", 16, 97, 78, 22);
     g_java = make_control(L"COMBOBOX", L"",
                           CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
-                          WS_EX_CLIENTEDGE, 100, 132, 540, 220, ID_JAVA);
+                          WS_EX_CLIENTEDGE, 100, 94, 540, 220, ID_JAVA);
     if (g_java) {
         SendMessageW(g_java, CB_SETDROPPEDWIDTH, 900, 0);
     }
     g_browse_java = make_control(L"BUTTON", L"浏览...", BS_PUSHBUTTON,
-                                 0, 648, 132, 96, 26, ID_BROWSE_JAVA);
+                                 0, 648, 94, 96, 26, ID_BROWSE_JAVA);
 
     g_demo = make_control(L"BUTTON", L"演示模式",
                           BS_AUTOCHECKBOX | WS_TABSTOP, 0,
-                          104, 170, 100, 24, ID_DEMO);
-    make_label(L"下载时会校验已有文件", 240, 170, 240, 24);
+                          104, 132, 100, 24, ID_DEMO);
+    make_label(L"下载时会校验已有文件", 240, 132, 240, 24);
 
     g_launch = make_control(L"BUTTON", L"启动游戏", BS_PUSHBUTTON | WS_TABSTOP,
-                            0, 100, 202, 140, 34, ID_LAUNCH);
+                            0, 100, 164, 140, 34, ID_LAUNCH);
     g_user_button = make_control(L"BUTTON", L"用户名",
                                  BS_PUSHBUTTON | WS_TABSTOP, 0,
-                                 250, 202, 110, 34, ID_USER_BUTTON);
+                                 250, 164, 110, 34, ID_USER_BUTTON);
     g_settings_button = make_control(L"BUTTON", L"设置",
                                      BS_PUSHBUTTON | WS_TABSTOP, 0,
-                                     370, 202, 100, 34, ID_SETTINGS);
+                                     370, 164, 100, 34, ID_SETTINGS);
     g_download = make_control(L"BUTTON", L"下载游戏",
                               BS_PUSHBUTTON | WS_TABSTOP, 0,
-                              480, 202, 130, 34, ID_DOWNLOAD);
+                              480, 164, 130, 34, ID_DOWNLOAD);
     g_open_dir = make_control(L"BUTTON", L"打开目录",
                               BS_PUSHBUTTON | WS_TABSTOP, 0,
-                              620, 202, 124, 34, ID_OPEN_DIR);
+                              620, 164, 124, 34, ID_OPEN_DIR);
 
-    make_label(L"日志", 16, 246, 78, 22);
+    make_label(L"日志", 16, 210, 78, 22);
     g_log = make_control(
         L"EDIT", L"",
         WS_BORDER | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
-        WS_EX_CLIENTEDGE, 16, 268, 728, 290, ID_LOG);
+        WS_EX_CLIENTEDGE, 16, 232, 728, 326, ID_LOG);
     if (g_log) {
         SendMessageW(g_log, WM_SETFONT, (WPARAM)g_log_font, TRUE);
         SendMessageW(g_log, EM_SETLIMITTEXT, MCLC_LOG_LIMIT, 0);
@@ -1928,6 +1954,11 @@ static void create_controls(HWND hwnd)
     g_export_log = make_control(L"BUTTON", L"导出日志",
                                 BS_PUSHBUTTON | WS_TABSTOP, 0,
                                 648, 570, 96, 28, ID_EXPORT_LOG);
+
+    apply_font_recursive(hwnd, g_font);
+    if (g_log) {
+        SendMessageW(g_log, WM_SETFONT, (WPARAM)g_log_font, TRUE);
+    }
 
     free(default_dir);
     refresh_java_list();
@@ -2183,8 +2214,6 @@ static GuiJob *base_job(int kind)
 {
     GuiJob *job = (GuiJob *)xcalloc(1, sizeof(GuiJob));
     Profile *profile;
-    wchar_t *memory_text;
-    int memory;
 
     job->hwnd = g_hwnd;
     job->kind = kind;
@@ -2229,17 +2258,7 @@ static GuiJob *base_job(int kind)
         return NULL;
     }
 
-    memory_text = get_control_text(g_memory);
-    memory = _wtoi(memory_text);
-    free(memory_text);
-    if (memory < 256 || memory > 65536) {
-        gui_logf(L"任务失败：内存设置无效（%d MB）。", memory);
-        MessageBoxW(g_hwnd, L"内存必须是 256 到 65536 之间的 MB 数。",
-                    L"MCLC", MB_ICONERROR);
-        free_job(job);
-        return NULL;
-    }
-    job->memory_mb = memory;
+    job->memory_mb = g_settings.memory_mb;
 
     job->java = get_selected_java_path();
     job->demo = (IsDlgButtonChecked(g_hwnd, ID_DEMO) == BST_CHECKED);
@@ -2562,6 +2581,7 @@ static LRESULT CALLBACK picker_proc(HWND hwnd, UINT message,
         SetWindowTextW(state->status, L"正在获取版本清单...");
         EnableWindow(state->category, FALSE);
         EnableWindow(state->confirm, FALSE);
+        apply_font_recursive(hwnd, g_font);
         return 0;
     }
 
@@ -2907,6 +2927,7 @@ static LRESULT CALLBACK new_user_proc(HWND hwnd, UINT message,
                         (HMENU)(INT_PTR)ID_NEW_CANCEL, g_instance, NULL);
         SendMessageW(state->name, WM_SETFONT, (WPARAM)g_font, TRUE);
         SendMessageW(state->uuid, WM_SETFONT, (WPARAM)g_font, TRUE);
+        apply_font_recursive(hwnd, g_font);
         SetFocus(state->name);
         return 0;
     }
@@ -3085,6 +3106,7 @@ static LRESULT CALLBACK user_proc(HWND hwnd, UINT message,
                         340, 92, 90, 30, hwnd,
                         (HMENU)(INT_PTR)ID_PROFILE_CANCEL, g_instance, NULL);
         SendMessageW(state->combo, WM_SETFONT, (WPARAM)g_font, TRUE);
+        apply_font_recursive(hwnd, g_font);
         fill_profile_combo(state, g_profile_current);
         return 0;
     }
@@ -3200,6 +3222,7 @@ typedef struct {
     HWND mode;
     HWND width;
     HWND height;
+    HWND memory;
     HWND jvm;
     HWND game;
     HWND pre;
@@ -3283,40 +3306,49 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT message,
             174, 144, 70, 26, hwnd,
             (HMENU)(INT_PTR)ID_SET_HEIGHT, g_instance, NULL);
 
+        CreateWindowExW(0, L"STATIC", L"内存 MB",
+                        WS_CHILD | WS_VISIBLE | SS_LEFT,
+                        16, 180, 120, 22, hwnd, NULL, g_instance, NULL);
+        state->memory = CreateWindowExW(
+            0, L"EDIT", L"",
+            WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
+            150, 176, 100, 26, hwnd,
+            (HMENU)(INT_PTR)ID_MEMORY, g_instance, NULL);
+
         CreateWindowExW(0, L"STATIC", L"JVM 参数",
                         WS_CHILD | WS_VISIBLE | SS_LEFT,
-                        16, 182, 120, 22, hwnd, NULL, g_instance, NULL);
+                        16, 214, 120, 22, hwnd, NULL, g_instance, NULL);
         state->jvm = CreateWindowExW(
             WS_EX_CLIENTEDGE, L"EDIT", L"",
             WS_CHILD | WS_VISIBLE | WS_BORDER | ES_MULTILINE |
             ES_AUTOVSCROLL | WS_VSCROLL,
-            150, 178, 380, 64, hwnd,
+            150, 210, 380, 64, hwnd,
             (HMENU)(INT_PTR)ID_SET_JVM, g_instance, NULL);
         CreateWindowExW(0, L"STATIC", L"游戏参数",
                         WS_CHILD | WS_VISIBLE | SS_LEFT,
-                        16, 252, 120, 22, hwnd, NULL, g_instance, NULL);
+                        16, 284, 120, 22, hwnd, NULL, g_instance, NULL);
         state->game = CreateWindowExW(
             WS_EX_CLIENTEDGE, L"EDIT", L"",
             WS_CHILD | WS_VISIBLE | WS_BORDER | ES_MULTILINE |
             ES_AUTOVSCROLL | WS_VSCROLL,
-            150, 248, 380, 64, hwnd,
+            150, 280, 380, 64, hwnd,
             (HMENU)(INT_PTR)ID_SET_GAME, g_instance, NULL);
         CreateWindowExW(0, L"STATIC", L"启动前命令",
                         WS_CHILD | WS_VISIBLE | SS_LEFT,
-                        16, 322, 120, 22, hwnd, NULL, g_instance, NULL);
+                        16, 354, 120, 22, hwnd, NULL, g_instance, NULL);
         state->pre = CreateWindowExW(
             WS_EX_CLIENTEDGE, L"EDIT", L"",
             WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
-            150, 318, 380, 26, hwnd,
+            150, 350, 380, 26, hwnd,
             (HMENU)(INT_PTR)ID_SET_PRE, g_instance, NULL);
         CreateWindowExW(0, L"BUTTON", L"保存",
                         WS_CHILD | WS_VISIBLE | WS_TABSTOP |
                         BS_DEFPUSHBUTTON,
-                        340, 370, 90, 30, hwnd,
+                        340, 400, 90, 30, hwnd,
                         (HMENU)(INT_PTR)ID_SET_OK, g_instance, NULL);
         CreateWindowExW(0, L"BUTTON", L"取消",
                         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-                        440, 370, 90, 30, hwnd,
+                        440, 400, 90, 30, hwnd,
                         (HMENU)(INT_PTR)ID_SET_CANCEL, g_instance, NULL);
 
         SendMessageW(state->isolation, BM_SETCHECK,
@@ -3333,6 +3365,8 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT message,
             SetWindowTextW(state->width, buf);
             swprintf(buf, 32, L"%d", g_settings.height);
             SetWindowTextW(state->height, buf);
+            swprintf(buf, 32, L"%d", g_settings.memory_mb);
+            SetWindowTextW(state->memory, buf);
         }
         SendMessageW(state->isolation, WM_SETFONT, (WPARAM)g_font, TRUE);
         SendMessageW(state->title, WM_SETFONT, (WPARAM)g_font, TRUE);
@@ -3341,9 +3375,11 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT message,
         SendMessageW(state->mode, WM_SETFONT, (WPARAM)g_font, TRUE);
         SendMessageW(state->width, WM_SETFONT, (WPARAM)g_font, TRUE);
         SendMessageW(state->height, WM_SETFONT, (WPARAM)g_font, TRUE);
+        SendMessageW(state->memory, WM_SETFONT, (WPARAM)g_font, TRUE);
         SendMessageW(state->jvm, WM_SETFONT, (WPARAM)g_font, TRUE);
         SendMessageW(state->game, WM_SETFONT, (WPARAM)g_font, TRUE);
         SendMessageW(state->pre, WM_SETFONT, (WPARAM)g_font, TRUE);
+        apply_font_recursive(hwnd, g_font);
         return 0;
     }
 
@@ -3355,14 +3391,23 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT message,
                                              CB_GETCURSEL, 0, 0);
             wchar_t *width = get_control_text(state->width);
             wchar_t *height = get_control_text(state->height);
+            wchar_t *memory_text = get_control_text(state->memory);
             int w = _wtoi(width);
             int h = _wtoi(height);
+            int memory = _wtoi(memory_text);
             free(width);
             free(height);
+            free(memory_text);
             if (mode == 1 && (w < 320 || w > 16384 ||
                               h < 240 || h > 16384)) {
                 MessageBoxW(hwnd,
                             L"自定义窗口大小必须是 320×240 到 16384×16384。",
+                            L"MCLC", MB_ICONWARNING);
+                return 0;
+            }
+            if (memory < 256 || memory > 65536) {
+                MessageBoxW(hwnd,
+                            L"内存必须是 256 到 65536 之间的 MB 数。",
                             L"MCLC", MB_ICONWARNING);
                 return 0;
             }
@@ -3371,6 +3416,7 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT message,
             g_settings.priority = priority >= 0 && priority <= 2
                                       ? priority : 1;
             g_settings.window_mode = mode >= 0 && mode <= 2 ? mode : 0;
+            g_settings.memory_mb = memory;
             if (mode == 1) {
                 g_settings.width = w;
                 g_settings.height = h;
@@ -3427,7 +3473,7 @@ static void open_settings_window(void)
     rect.left = 0;
     rect.top = 0;
     rect.right = 560;
-    rect.bottom = 430;
+    rect.bottom = 460;
     AdjustWindowRectEx(&rect, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
                        FALSE, 0);
     EnableWindow(g_hwnd, FALSE);

@@ -8,6 +8,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The GUI captures stderr; route all progress text there. */
+#define printf(...) fprintf(stderr, __VA_ARGS__)
+
 #define MCLC_VERSION_MANIFEST_URL \
     L"https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
 

@@ -302,10 +302,11 @@ int zip_extract_all(const wchar_t *zip_path, const wchar_t *dest_dir,
             size_t end = i + 22 + (size_t)comment_len;
             /*
              * The ZIP specification puts EOCD at the very end, but some
-             * older JARs carry a small amount of trailing padding. Accept
-             * that as long as the central directory itself is in bounds.
+             * older JARs carry trailing data. Accept the last EOCD whose
+             * declared comment is in bounds; the central directory bounds
+             * are checked below.
              */
-            if (end <= size && size - end <= 4096) {
+            if (end <= size) {
                 eocd = i;
                 break;
             }
