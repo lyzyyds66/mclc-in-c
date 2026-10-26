@@ -32,20 +32,15 @@ jobs:
         shell: cmd
         run: build.bat
 
-      - name: Smoke test CLI
+      - name: Check artifact
         shell: cmd
-        run: |
-          mclc.exe -V
-          mclc.exe -h >nul
-          if not exist mclc_gui.exe exit /b 1
+        run: if not exist mclc_gui.exe exit /b 1
 
       - name: Upload MSVC artifact
         uses: actions/upload-artifact@v4
         with:
           name: mclc-msvc-x64
-          path: |
-            mclc.exe
-            mclc_gui.exe
+          path: mclc_gui.exe
           if-no-files-found: error
           retention-days: 14
 
@@ -72,20 +67,18 @@ jobs:
       - name: Build
         run: make
 
-      - name: Smoke test CLI
+      - name: Check artifact
         shell: pwsh
         run: |
-          .\mclc.exe -V
-          .\mclc.exe -h | Out-Null
-          if (-not (Test-Path .\mclc_gui.exe)) { throw "mclc_gui.exe missing" }
+          if (-not (Test-Path .\mclc_gui.exe)) {
+            throw "mclc_gui.exe missing"
+          }
 
       - name: Upload MinGW artifact
         uses: actions/upload-artifact@v4
         with:
           name: mclc-mingw-x64
-          path: |
-            mclc.exe
-            mclc_gui.exe
+          path: mclc_gui.exe
           if-no-files-found: error
           retention-days: 14
 
@@ -110,20 +103,16 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force release | Out-Null
           Copy-Item dist/mclc-msvc-x64/mclc_gui.exe release/mclc-gui-msvc-x64.exe
-          Copy-Item dist/mclc-msvc-x64/mclc.exe release/mclc-cli-msvc-x64.exe
           Copy-Item dist/mclc-mingw-x64/mclc_gui.exe release/mclc-gui-mingw-x64.exe
-          Copy-Item dist/mclc-mingw-x64/mclc.exe release/mclc-cli-mingw-x64.exe
-          Compress-Archive -Path README.md,LICENSE,release/mclc-gui-msvc-x64.exe,release/mclc-cli-msvc-x64.exe -DestinationPath release/mclc-msvc-x64.zip -Force
-          Compress-Archive -Path README.md,LICENSE,release/mclc-gui-mingw-x64.exe,release/mclc-cli-mingw-x64.exe -DestinationPath release/mclc-mingw-x64.zip -Force
+          Compress-Archive -Path README.md,LICENSE,release/mclc-gui-msvc-x64.exe -DestinationPath release/mclc-msvc-x64.zip -Force
+          Compress-Archive -Path README.md,LICENSE,release/mclc-gui-mingw-x64.exe -DestinationPath release/mclc-mingw-x64.zip -Force
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             release/mclc-gui-msvc-x64.exe
-            release/mclc-cli-msvc-x64.exe
             release/mclc-gui-mingw-x64.exe
-            release/mclc-cli-mingw-x64.exe
             release/mclc-msvc-x64.zip
             release/mclc-mingw-x64.zip
           generate_release_notes: true

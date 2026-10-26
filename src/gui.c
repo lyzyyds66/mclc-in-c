@@ -1,9 +1,9 @@
 /*
  * MCLC GUI - native Win32 front-end.
  *
- * The GUI reuses the same version/install/launch core as the CLI. Core
- * progress output is redirected into a pipe and rendered in the log control;
- * no console window is created.
+ * Core progress output is redirected into a pipe, combined with GUI operation
+ * records, rendered in the log control and kept for export. No console window
+ * is created.
  */
 #define _CRT_SECURE_NO_WARNINGS
 #include "util.h"
@@ -23,6 +23,7 @@
 #include <io.h>
 #include <locale.h>
 #include <process.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,6 +52,7 @@ enum {
     ID_OPEN_DIR,
     ID_LOG,
     ID_STATUS,
+    ID_EXPORT_LOG,
 
     ID_PICK_CATEGORY = 300,
     ID_PICK_LIST,
@@ -100,6 +102,7 @@ static HWND g_download;
 static HWND g_open_dir;
 static HWND g_log;
 static HWND g_status;
+static HWND g_export_log;
 static HWND g_progress;
 static HWND g_progress_bar;
 static HWND g_progress_text;
@@ -109,6 +112,16 @@ static HANDLE g_log_read;
 static volatile LONG g_running;
 static volatile LONG g_picker_loading;
 static char *g_installed_version;
+
+#define MCLC_LOG_LIMIT (16u * 1024u * 1024u)
+static CRITICAL_SECTION g_log_lock;
+static int g_log_lock_ready;
+static wchar_t *g_log_ui;
+static size_t g_log_ui_len;
+static size_t g_log_ui_cap;
+static volatile LONG g_log_dirty;
+
+static void gui_logf(const wchar_t *fmt, ...);
 
 /* ------------------------------------------------------------------ */
 /* Small helpers                                                       */
@@ -537,6 +550,7 @@ static void refresh_java_list(void)
         }
     }
     SendMessageW(g_java, CB_SETCURSEL, 0, 0);
+    gui_logf(L"Java 检测完成，共 %zu 个版本。", g_java_entry_count);
 }
 
 static wchar_t *get_selected_java_path(void)
@@ -586,19 +600,103 @@ static void select_java_entry(int entry_index)
 /* Log pipe: stdout/stderr -> read-only edit control                   */
 /* ------------------------------------------------------------------ */
 
-static void append_log_text(const wchar_t *text)
+static void set_log_view_text(const wchar_t *text)
 {
     int len;
 
-    if (!g_log || !text || !*text) {
+    if (!g_log || !text) {
         return;
     }
+    SendMessageW(g_log, WM_SETTEXT, 0, (LPARAM)text);
     len = GetWindowTextLengthW(g_log);
-    SendMessageW(g_log, EM_SETREADONLY, FALSE, 0);
     SendMessageW(g_log, EM_SETSEL, (WPARAM)len, (LPARAM)len);
-    SendMessageW(g_log, EM_REPLACESEL, FALSE, (LPARAM)text);
-    SendMessageW(g_log, EM_SETREADONLY, TRUE, 0);
     SendMessageW(g_log, EM_SCROLLCARET, 0, 0);
+}
+
+static void refresh_log_view(void)
+{
+    wchar_t *snapshot = NULL;
+
+    if (!g_log || !g_log_lock_ready) {
+        return;
+    }
+    EnterCriticalSection(&g_log_lock);
+    if (g_log_ui) {
+        snapshot = xwcsdup(g_log_ui);
+    }
+    InterlockedExchange(&g_log_dirty, 0);
+    LeaveCriticalSection(&g_log_lock);
+    if (snapshot) {
+        set_log_view_text(snapshot);
+        free(snapshot);
+    }
+}
+
+static void append_log_text(const wchar_t *text)
+{
+    size_t add;
+    size_t needed;
+
+    if (!text || !*text) {
+        return;
+    }
+    add = wcslen(text);
+    if (add > MCLC_LOG_LIMIT) {
+        text += add - MCLC_LOG_LIMIT;
+        add = MCLC_LOG_LIMIT;
+    }
+    if (!g_log_lock_ready) {
+        return;
+    }
+
+    EnterCriticalSection(&g_log_lock);
+    if (g_log_ui_len + add > MCLC_LOG_LIMIT) {
+        size_t drop = g_log_ui_len + add - MCLC_LOG_LIMIT;
+        if (drop < g_log_ui_len) {
+            memmove(g_log_ui, g_log_ui + drop,
+                    (g_log_ui_len - drop) * sizeof(wchar_t));
+            g_log_ui_len -= drop;
+        } else {
+            g_log_ui_len = 0;
+        }
+    }
+    needed = g_log_ui_len + add + 1;
+    if (needed > g_log_ui_cap) {
+        size_t cap = g_log_ui_cap ? g_log_ui_cap : 4096;
+        while (cap < needed) {
+            cap *= 2;
+        }
+        g_log_ui = (wchar_t *)xrealloc(g_log_ui, cap * sizeof(wchar_t));
+        g_log_ui_cap = cap;
+    }
+    memcpy(g_log_ui + g_log_ui_len, text, add * sizeof(wchar_t));
+    g_log_ui_len += add;
+    g_log_ui[g_log_ui_len] = L'\0';
+    InterlockedExchange(&g_log_dirty, 1);
+    LeaveCriticalSection(&g_log_lock);
+}
+
+static void gui_logf(const wchar_t *fmt, ...)
+{
+    wchar_t message[4096];
+    wchar_t line[4224];
+    SYSTEMTIME now;
+    va_list args;
+
+    if (!fmt) {
+        return;
+    }
+    message[0] = L'\0';
+    va_start(args, fmt);
+    vswprintf(message, 4096, fmt, args);
+    va_end(args);
+    message[4095] = L'\0';
+
+    GetLocalTime(&now);
+    swprintf(line, 4224, L"[%02u:%02u:%02u] %s\r\n",
+             (unsigned)now.wHour, (unsigned)now.wMinute,
+             (unsigned)now.wSecond, message);
+    append_log_text(line);
 }
 
 static void log_feed(const char *data, size_t len)
@@ -730,7 +828,11 @@ static void setup_log_pipe(void)
         CloseHandle(read_end);
         return;
     }
-    _close(fd);
+    /*
+     * Keep fd open. _dup2 gives stdout/stderr their own descriptors in the
+     * CRT; closing this one is unnecessary and can close the pipe on CRTs
+     * that share the underlying handle.
+     */
     _setmode(_fileno(stdout), _O_BINARY);
     _setmode(_fileno(stderr), _O_BINARY);
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -932,6 +1034,7 @@ static void refresh_versions(void)
     free(versions_dir);
     free(game_dir);
 
+    gui_logf(L"本地版本扫描完成，共 %d 个。", count);
     if (count > 0) {
         SendMessageW(g_version, CB_SETCURSEL, 0, 0);
         set_status(L"就绪。");
@@ -1119,12 +1222,17 @@ static unsigned __stdcall job_thread(void *parameter)
     }
 
     if (rc < 0) {
+        wchar_t *detail = error ? utf8_to_wide(error) : NULL;
         fprintf(stderr, "[错误] %s\n",
                 error ? error : "未知错误");
+        gui_logf(L"任务失败：%ls", detail ? detail : L"未知错误");
+        free(detail);
     } else if (job->kind == JOB_DOWNLOAD) {
         fprintf(stderr, "[完成] 下载与校验完成。\n");
+        gui_logf(L"下载与校验完成。");
     } else {
         fprintf(stderr, "[完成] Minecraft 已启动。\n");
+        gui_logf(L"Minecraft 已启动。");
     }
     free(error);
     PostMessageW(job->hwnd, WM_APP_JOB_DONE, (WPARAM)job->kind,
@@ -1246,13 +1354,16 @@ static void create_controls(HWND hwnd)
         WS_EX_CLIENTEDGE, 16, 268, 728, 290, ID_LOG);
     if (g_log) {
         SendMessageW(g_log, WM_SETFONT, (WPARAM)g_log_font, TRUE);
-        SendMessageW(g_log, EM_SETLIMITTEXT, 4u * 1024u * 1024u, 0);
+        SendMessageW(g_log, EM_SETLIMITTEXT, MCLC_LOG_LIMIT, 0);
     }
     g_status = make_control(L"STATIC", L"就绪。", SS_LEFT, 0,
-                            16, 572, 728, 22, ID_STATUS);
+                            16, 572, 620, 22, ID_STATUS);
     if (g_status) {
         SendMessageW(g_status, WM_SETFONT, (WPARAM)g_font, TRUE);
     }
+    g_export_log = make_control(L"BUTTON", L"导出日志",
+                                BS_PUSHBUTTON | WS_TABSTOP, 0,
+                                648, 570, 96, 28, ID_EXPORT_LOG);
 
     free(default_dir);
     refresh_java_list();
@@ -1271,6 +1382,7 @@ static void browse_game_dir(void)
     wchar_t display_name[MAX_PATH];
     LPITEMIDLIST pidl;
 
+    gui_logf(L"用户点击浏览游戏目录。");
     memset(&browse, 0, sizeof(browse));
     browse.hwndOwner = g_hwnd;
     browse.pszDisplayName = display_name;
@@ -1279,10 +1391,13 @@ static void browse_game_dir(void)
     pidl = SHBrowseForFolderW(&browse);
     if (pidl) {
         if (SHGetPathFromIDListW(pidl, path)) {
+            gui_logf(L"用户选择游戏目录：%ls", path);
             SetWindowTextW(g_game_dir, path);
             refresh_versions();
         }
         CoTaskMemFree(pidl);
+    } else {
+        gui_logf(L"用户取消选择游戏目录。");
     }
 }
 
@@ -1291,6 +1406,7 @@ static void browse_java(void)
     OPENFILENAMEW dialog;
     wchar_t path[MAX_PATH];
 
+    gui_logf(L"用户点击浏览 Java。");
     path[0] = L'\0';
     memset(&dialog, 0, sizeof(dialog));
     dialog.lStructSize = sizeof(dialog);
@@ -1303,12 +1419,16 @@ static void browse_java(void)
     dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
     if (GetOpenFileNameW(&dialog)) {
         int entry = add_java_candidate(path);
+        gui_logf(L"用户选择 Java：%ls", path);
         if (entry < 0) {
+            gui_logf(L"所选文件不是有效的 java.exe：%ls", path);
             MessageBoxW(g_hwnd, L"所选文件不是有效的 java.exe。",
                         L"MCLC", MB_ICONWARNING);
         } else {
             select_java_entry(entry);
         }
+    } else {
+        gui_logf(L"用户取消选择 Java。");
     }
 }
 
@@ -1318,15 +1438,91 @@ static void open_game_dir(void)
     HINSTANCE result;
 
     if (!dir) {
+        gui_logf(L"打开游戏目录失败：目录无效。");
         MessageBoxW(g_hwnd, L"游戏目录无效。", L"MCLC", MB_ICONERROR);
         return;
     }
     mkdir_p(dir);
+    gui_logf(L"打开游戏目录：%ls", dir);
     result = ShellExecuteW(g_hwnd, L"open", dir, NULL, NULL, SW_SHOWNORMAL);
     if ((INT_PTR)result <= 32) {
+        gui_logf(L"打开游戏目录失败，ShellExecute 返回 %lld。",
+                 (long long)(INT_PTR)result);
         MessageBoxW(g_hwnd, L"无法打开游戏目录。", L"MCLC", MB_ICONERROR);
     }
     free(dir);
+}
+
+static void export_log(void)
+{
+    OPENFILENAMEW dialog;
+    wchar_t path[MAX_PATH];
+    wchar_t *snapshot = NULL;
+    char *utf8 = NULL;
+    SYSTEMTIME now;
+    FILE *file;
+    int ok = 0;
+
+    gui_logf(L"用户点击导出日志。");
+    GetLocalTime(&now);
+    swprintf(path, MAX_PATH, L"mclc-log-%04u%02u%02u-%02u%02u%02u.log",
+             (unsigned)now.wYear, (unsigned)now.wMonth, (unsigned)now.wDay,
+             (unsigned)now.wHour, (unsigned)now.wMinute,
+             (unsigned)now.wSecond);
+    memset(&dialog, 0, sizeof(dialog));
+    dialog.lStructSize = sizeof(dialog);
+    dialog.hwndOwner = g_hwnd;
+    dialog.lpstrFilter =
+        L"日志文件 (*.log)\0*.log\0所有文件 (*.*)\0*.*\0\0";
+    dialog.lpstrFile = path;
+    dialog.nMaxFile = MAX_PATH;
+    dialog.lpstrTitle = L"导出日志";
+    dialog.lpstrDefExt = L"log";
+    dialog.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST |
+                   OFN_HIDEREADONLY;
+    if (!GetSaveFileNameW(&dialog)) {
+        gui_logf(L"用户取消导出日志。");
+        return;
+    }
+    {
+        size_t path_len = wcslen(path);
+        if (path_len < 4 ||
+            _wcsicmp(path + path_len - 4, L".log") != 0) {
+            if (path_len + 5 < MAX_PATH) {
+                wcscat(path, L".log");
+            }
+        }
+    }
+
+    if (g_log_lock_ready) {
+        EnterCriticalSection(&g_log_lock);
+        snapshot = xwcsdup(g_log_ui ? g_log_ui : L"");
+        LeaveCriticalSection(&g_log_lock);
+    }
+    utf8 = snapshot ? wide_to_utf8(snapshot) : NULL;
+    file = utf8 ? _wfopen(path, L"wb") : NULL;
+    if (file) {
+        static const unsigned char bom[3] = { 0xEF, 0xBB, 0xBF };
+        int wrote = fwrite(bom, 1, sizeof(bom), file) == sizeof(bom) &&
+                    fwrite(utf8, 1, strlen(utf8), file) == strlen(utf8);
+        if (wrote) {
+            if (fclose(file) == 0) {
+                ok = 1;
+            }
+        } else {
+            fclose(file);
+        }
+    }
+    free(utf8);
+    free(snapshot);
+
+    if (ok) {
+        gui_logf(L"日志已导出：%ls", path);
+        set_status(L"日志已导出。");
+    } else {
+        gui_logf(L"日志导出失败：%ls", path);
+        MessageBoxW(g_hwnd, L"无法写入日志文件。", L"MCLC", MB_ICONERROR);
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1345,6 +1541,7 @@ static int start_job(GuiJob *job, const wchar_t *status)
             (PVOID volatile *)&g_installed_version, NULL);
         free(old);
     }
+    gui_logf(L"后台任务开始：%ls", status);
     InterlockedExchange(&g_running, 1);
     set_busy(TRUE);
     set_status(status);
@@ -1353,6 +1550,7 @@ static int start_job(GuiJob *job, const wchar_t *status)
         InterlockedExchange(&g_running, 0);
         set_busy(FALSE);
         set_status(L"无法创建后台线程。");
+        gui_logf(L"后台任务启动失败：无法创建线程。");
         free_job(job);
         MessageBoxW(g_hwnd, L"无法创建后台线程。", L"MCLC", MB_ICONERROR);
         return 0;
@@ -1372,15 +1570,18 @@ static GuiJob *base_job(int kind)
     job->kind = kind;
     job->game_dir = get_game_dir_value();
     if (!job->game_dir) {
+        gui_logf(L"任务失败：游戏目录无效。");
         MessageBoxW(g_hwnd, L"游戏目录无效。", L"MCLC", MB_ICONERROR);
         free_job(job);
         return NULL;
     }
     if (mkdir_p(job->game_dir) != 0) {
+        gui_logf(L"任务失败：无法创建游戏目录 %ls。", job->game_dir);
         MessageBoxW(g_hwnd, L"无法创建游戏目录。", L"MCLC", MB_ICONERROR);
         free_job(job);
         return NULL;
     }
+    gui_logf(L"游戏目录：%ls", job->game_dir);
 
     if (kind == JOB_DOWNLOAD) {
         job->verify = 1;
@@ -1398,6 +1599,7 @@ static GuiJob *base_job(int kind)
     job->username = wide_to_utf8(user);
     free(user);
     if (!job->username) {
+        gui_logf(L"任务失败：用户名编码无效。");
         MessageBoxW(g_hwnd, L"用户名编码无效。", L"MCLC", MB_ICONERROR);
         free_job(job);
         return NULL;
@@ -1407,6 +1609,7 @@ static GuiJob *base_job(int kind)
     memory = _wtoi(memory_text);
     free(memory_text);
     if (memory < 256 || memory > 65536) {
+        gui_logf(L"任务失败：内存设置无效（%d MB）。", memory);
         MessageBoxW(g_hwnd, L"内存必须是 256 到 65536 之间的 MB 数。",
                     L"MCLC", MB_ICONERROR);
         free_job(job);
@@ -1434,11 +1637,25 @@ static void start_launch(void)
     }
     id = get_selected_version_id();
     if (!id) {
+        gui_logf(L"启动失败：未选择版本。");
         MessageBoxW(g_hwnd, L"请选择或输入版本号。", L"MCLC", MB_ICONWARNING);
         free_job(job);
         return;
     }
     job->version_id = id;
+    {
+        wchar_t *wide_id = utf8_to_wide(id);
+        wchar_t *wide_user = job->username
+                                 ? utf8_to_wide(job->username) : NULL;
+        gui_logf(L"用户点击启动游戏：版本=%ls，用户=%ls，内存=%d MB，"
+                 L"Java=%ls，演示=%ls，目录=%ls",
+                 wide_id ? wide_id : L"(未知)",
+                 wide_user ? wide_user : L"Steve", job->memory_mb,
+                 job->java ? job->java : L"自动查找",
+                 job->demo ? L"是" : L"否", job->game_dir);
+        free(wide_user);
+        free(wide_id);
+    }
     start_job(job, L"正在启动游戏...");
 }
 
@@ -1458,7 +1675,14 @@ static void start_download(const char *version_id, const char *json_url,
     job->version_id = xstrdup(version_id);
     job->json_url = (json_url && *json_url) ? xstrdup(json_url) : NULL;
     job->json_sha1 = (json_sha1 && *json_sha1) ? xstrdup(json_sha1) : NULL;
+    {
+        wchar_t *wide_id = utf8_to_wide(version_id);
+        gui_logf(L"用户确认下载游戏：版本=%ls，目录=%ls",
+                 wide_id ? wide_id : L"(未知)", job->game_dir);
+        free(wide_id);
+    }
     if (!create_progress_window(version_id)) {
+        gui_logf(L"下载失败：无法创建进度窗口。");
         MessageBoxW(g_hwnd, L"无法创建下载进度窗口。", L"MCLC", MB_ICONERROR);
         free_job(job);
         return;
@@ -1618,6 +1842,13 @@ static void picker_confirm(PickerState *state)
     state->selected_sha1 = state->manifest.versions[item].sha1
                                ? xstrdup(state->manifest.versions[item].sha1)
                                : NULL;
+    {
+        wchar_t *wide_id = state->selected
+                               ? utf8_to_wide(state->selected) : NULL;
+        gui_logf(L"用户确认下载版本：%ls",
+                 wide_id ? wide_id : L"(未知)");
+        free(wide_id);
+    }
     DestroyWindow(state->hwnd);
 }
 
@@ -1705,6 +1936,8 @@ static LRESULT CALLBACK picker_proc(HWND hwnd, UINT message,
                          detail ? L"\r\n" : L"",
                          detail ? detail : L"");
                 SetWindowTextW(state->status, message);
+                gui_logf(L"版本清单加载失败：%ls",
+                         detail ? detail : L"未知错误");
                 set_status(L"获取版本清单失败。");
                 free(detail);
             }
@@ -1719,6 +1952,8 @@ static LRESULT CALLBACK picker_proc(HWND hwnd, UINT message,
         state->manifest_ready = 1;
         EnableWindow(state->category, TRUE);
         picker_fill_versions(state);
+        gui_logf(L"版本清单加载完成，共 %zu 个版本。",
+                 state->manifest.count);
         set_status(L"请选择要下载的版本。");
         SetFocus(state->category);
         free(result->error);
@@ -1732,6 +1967,10 @@ static LRESULT CALLBACK picker_proc(HWND hwnd, UINT message,
         }
         if (LOWORD(wparam) == ID_PICK_CATEGORY &&
             HIWORD(wparam) == CBN_SELCHANGE) {
+            wchar_t *category = get_control_text(state->category);
+            gui_logf(L"用户切换版本类型：%ls",
+                     category && *category ? category : L"(未知)");
+            free(category);
             picker_fill_versions(state);
             return 0;
         }
@@ -1786,7 +2025,9 @@ static void open_download_picker(void)
     if (InterlockedCompareExchange(&g_running, 0, 0) != 0) {
         return;
     }
+    gui_logf(L"用户点击下载游戏。");
     if (InterlockedCompareExchange(&g_picker_loading, 1, 0) != 0) {
+        gui_logf(L"版本清单仍在加载，已忽略本次请求。");
         set_status(L"版本清单正在加载，请稍候。");
         return;
     }
@@ -1842,9 +2083,11 @@ static void open_download_picker(void)
         NULL, 0, picker_load_thread, (void *)(uintptr_t)state.hwnd, 0, NULL);
     if (!thread) {
         InterlockedExchange(&g_picker_loading, 0);
+        gui_logf(L"无法启动版本清单加载线程。");
         SetWindowTextW(state.status, L"无法启动版本清单加载线程。");
         set_status(L"无法获取版本清单。");
     } else {
+        gui_logf(L"版本选择窗口已打开，正在后台加载版本清单。");
         CloseHandle(thread);
     }
 
@@ -1880,6 +2123,7 @@ static void open_download_picker(void)
         start_download(state.selected, state.selected_url,
                        state.selected_sha1);
     } else if (!quit) {
+        gui_logf(L"用户取消下载游戏。");
         set_status(L"已取消下载。");
     }
     remote_manifest_free(&state.manifest);
@@ -1905,8 +2149,17 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT message,
                 CloseHandle((HANDLE)reader);
             }
         }
-        append_log_text(L"MCLC GUI 已就绪。\r\n");
+        refresh_log_view();
+        gui_logf(L"MCLC GUI 已就绪。");
+        SetTimer(hwnd, 1, 200, NULL);
         return 0;
+
+    case WM_TIMER:
+        if (wparam == 1 && g_log_dirty) {
+            refresh_log_view();
+            return 0;
+        }
+        break;
 
     case WM_COMMAND:
         switch (LOWORD(wparam)) {
@@ -1917,6 +2170,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT message,
             open_download_picker();
             break;
         case ID_REFRESH:
+            gui_logf(L"用户点击刷新本地版本列表。");
             refresh_versions();
             break;
         case ID_BROWSE_GAME:
@@ -1927,6 +2181,31 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT message,
             break;
         case ID_OPEN_DIR:
             open_game_dir();
+            break;
+        case ID_EXPORT_LOG:
+            export_log();
+            break;
+        case ID_VERSION:
+            if (HIWORD(wparam) == CBN_SELCHANGE) {
+                wchar_t *version = get_control_text(g_version);
+                gui_logf(L"用户选择版本：%ls",
+                         version && *version ? version : L"(空)");
+                free(version);
+            }
+            break;
+        case ID_JAVA:
+            if (HIWORD(wparam) == CBN_SELCHANGE) {
+                wchar_t *java = get_selected_java_path();
+                gui_logf(L"用户选择 Java：%ls",
+                         java ? java : L"自动选择");
+                free(java);
+            }
+            break;
+        case ID_DEMO:
+            if (HIWORD(wparam) == BN_CLICKED) {
+                int demo = IsDlgButtonChecked(g_hwnd, ID_DEMO) == BST_CHECKED;
+                gui_logf(L"演示模式：%ls", demo ? L"开启" : L"关闭");
+            }
             break;
         default:
             break;
@@ -1994,6 +2273,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT message,
         return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
 
     case WM_CLOSE:
+        gui_logf(L"用户尝试关闭主窗口。");
         if (InterlockedCompareExchange(&g_running, 0, 0) != 0) {
             if (MessageBoxW(hwnd,
                             L"任务正在进行。关闭窗口会中断任务，确定退出吗？",
@@ -2005,6 +2285,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT message,
         return 0;
 
     case WM_DESTROY:
+        KillTimer(hwnd, 1);
         mclc_progress_clear();
         g_log = NULL;
         InterlockedExchange(&g_running, 0);
@@ -2042,12 +2323,16 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line,
     if (!setlocale(LC_CTYPE, ".UTF-8")) {
         setlocale(LC_CTYPE, ".UTF8");
     }
+    InitializeCriticalSection(&g_log_lock);
+    g_log_lock_ready = 1;
+    gui_logf(L"MCLC GUI 启动。");
     SetProcessDPIAware();
     com_ready = SUCCEEDED(CoInitializeEx(NULL, COINIT_APARTMENTTHREADED));
     {
         INITCOMMONCONTROLSEX controls;
         controls.dwSize = sizeof(controls);
-        controls.dwICC = ICC_PROGRESS_CLASS;
+        controls.dwICC = ICC_WIN95_CLASSES | ICC_STANDARD_CLASSES |
+                         ICC_PROGRESS_CLASS;
         InitCommonControlsEx(&controls);
     }
     setup_log_pipe();
