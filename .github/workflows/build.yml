@@ -98,14 +98,12 @@ jobs:
         with:
           path: dist
 
-      - name: Package
+      - name: Prepare executables
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force release | Out-Null
           Copy-Item dist/mclc-msvc-x64/mclc_gui.exe release/mclc-gui-msvc-x64.exe
           Copy-Item dist/mclc-mingw-x64/mclc_gui.exe release/mclc-gui-mingw-x64.exe
-          Compress-Archive -Path README.md,LICENSE,release/mclc-gui-msvc-x64.exe -DestinationPath release/mclc-msvc-x64.zip -Force
-          Compress-Archive -Path README.md,LICENSE,release/mclc-gui-mingw-x64.exe -DestinationPath release/mclc-mingw-x64.zip -Force
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -113,6 +111,4 @@ jobs:
           files: |
             release/mclc-gui-msvc-x64.exe
             release/mclc-gui-mingw-x64.exe
-            release/mclc-msvc-x64.zip
-            release/mclc-mingw-x64.zip
           generate_release_notes: true

@@ -113,7 +113,8 @@ static int sha1_matches(const wchar_t *path, const char *expected)
  */
 static int ensure_file(const wchar_t *path, const char *url, const char *sha1,
                        long long size, int verify, int show_progress,
-                       int quiet, const char *label, char **error)
+                       int quiet, int index, int total, const char *label,
+                       char **error)
 {
     int exists;
     int needs_download = 0;
@@ -125,6 +126,10 @@ static int ensure_file(const wchar_t *path, const char *url, const char *sha1,
         set_error(error, "内部错误：文件路径为空（%s）", label);
         return -1;
     }
+    printf("  [%d/%d] 检查 %s\n", index, total, label);
+    if (url && *url) {
+        printf("          URL: %s\n", url);
+    }
     exists = path_exists(path);
     if (exists && path_is_dir(path)) {
         exists = 0;
@@ -134,16 +139,22 @@ static int ensure_file(const wchar_t *path, const char *url, const char *sha1,
         if (size > 0 && actual_size != size) {
             needs_download = 1;
             bad_existing = 1;
-            if (!quiet) printf("  ! 大小不符，删除并重新下载: %s\n", label);
+            printf("  [%d/%d] 大小不符，删除并重新下载: %s\n",
+                   index, total, label);
         } else if (verify && sha1 && *sha1 && !sha1_matches(path, sha1)) {
             needs_download = 1;
             bad_existing = 1;
-            if (!quiet) printf("  ! SHA-1 不符，删除并重新下载: %s\n", label);
+            printf("  [%d/%d] SHA-1 不符，删除并重新下载: %s\n",
+                   index, total, label);
         } else {
+            printf("  [%d/%d] 已存在且校验通过: %s\n",
+                   index, total, label);
             return 0;
         }
     } else {
         needs_download = 1;
+        printf("  [%d/%d] 本地不存在，准备下载: %s\n",
+               index, total, label);
     }
 
     if (!needs_download) {
@@ -180,12 +191,13 @@ static int ensure_file(const wchar_t *path, const char *url, const char *sha1,
             return -1;
         }
     }
-    if (!show_progress && !quiet) {
-        printf("  + %s  <%s>\n", label, url);
-        fflush(stdout);
-    }
+    (void)quiet;
+    printf("  [%d/%d] 正在下载 %s\n", index, total, label);
+    fflush(stdout);
     if (http_download(wide_url, path, show_progress, size, error) != 0) {
         char *detail = (error && *error) ? xstrdup(*error) : NULL;
+        fprintf(stderr, "  [%d/%d] 下载失败 %s: %s\n",
+                index, total, label, detail ? detail : "未知错误");
         set_error(error, "下载 %s 失败%s%s", label, detail ? ": " : "",
                   detail ? detail : "");
         free(detail);
@@ -197,10 +209,13 @@ static int ensure_file(const wchar_t *path, const char *url, const char *sha1,
         if (sha1_file_hex(path, actual) != 0 ||
             _stricmp(actual, sha1) != 0) {
             DeleteFileW(path);
+            fprintf(stderr, "  [%d/%d] SHA-1 校验失败 %s\n",
+                    index, total, label);
             set_error(error, "SHA-1 校验失败: %s（期望 %s）", label, sha1);
             return -1;
         }
     }
+    printf("  [%d/%d] 下载完成 %s\n", index, total, label);
     return 0;
 }
 
@@ -302,7 +317,7 @@ static int install_assets(Version *version, const wchar_t *game_dir,
     }
     if (ensure_file(index_path, version->asset_index.url,
                     version->asset_index.sha1, version->asset_index.size,
-                    verify, 0, 0, "资源索引", error) != 0) {
+                    verify, 0, 0, 1, 1, "资源索引", error) != 0) {
         free(index_path);
         goto done;
     }
@@ -370,7 +385,7 @@ static int install_assets(Version *version, const wchar_t *game_dir,
             sb_append(&ub, hash);
             url = sb_take(&ub);
             if (ensure_file(object_path, url, hash, size, verify, 0, 1,
-                            m->key, error) != 0) {
+                            (int)processed, (int)total, m->key, error) != 0) {
                 free(url);
                 free(object_path);
                 json_free(index);
@@ -379,10 +394,13 @@ static int install_assets(Version *version, const wchar_t *game_dir,
             free(url);
             downloaded++;
             if (downloaded % 25 == 0 || processed == total) {
-                printf("\r  [资源] %zu/%zu（新下载 %zu）", processed, total,
+                printf("  [资源] %zu/%zu（新下载 %zu）\n", processed, total,
                        downloaded);
                 fflush(stdout);
             }
+        } else {
+            printf("  [%zu/%zu] 资源已存在且校验通过: %s\n",
+                   processed, total, m->key);
         }
         free(object_path);
     }
@@ -493,6 +511,8 @@ int install_version(Version *version, const wchar_t *game_dir, int verify,
     int i;
     size_t j;
     int native_count = 0;
+    int library_total = 0;
+    int library_index = 0;
 
     if (!version || !version->id) {
         set_error(error, "版本数据为空");
@@ -523,6 +543,13 @@ int install_version(Version *version, const wchar_t *game_dir, int verify,
         set_error(error, "无法创建游戏目录结构");
         goto fail;
     }
+    for (i = 0; i < version->layer_count; i++) {
+        for (j = 0; j < version->layers[i].library_count; j++) {
+            Library *lib = &version->layers[i].libraries[j];
+            if (lib->path) library_total++;
+            if (lib->native_path) library_total++;
+        }
+    }
 
     client_id_wide = utf8_to_wide(version->jar_id);
     if (!client_id_wide) {
@@ -550,7 +577,7 @@ int install_version(Version *version, const wchar_t *game_dir, int verify,
     printf("[*] 检查客户端 jar...\n");
     mclc_progress_begin_span(0, 8);
     if (ensure_file(client_path, version->client.url, version->client.sha1,
-                    version->client.size, verify, 1, 0,
+                    version->client.size, verify, 1, 0, 1, 1,
                     "客户端 jar", error) != 0) {
         mclc_progress_end_span();
         goto fail;
@@ -579,8 +606,10 @@ int install_version(Version *version, const wchar_t *game_dir, int verify,
                     goto fail;
                 }
                 slash_to_backslash(lib_path);
+                library_index++;
                 if (ensure_file(lib_path, lib->url, lib->sha1, lib->size,
-                                verify, 0, 0, lib->name, error) != 0) {
+                                verify, 0, 0, library_index, library_total,
+                                lib->name, error) != 0) {
                     free(lib_path);
                     goto fail;
                 }
@@ -594,8 +623,10 @@ int install_version(Version *version, const wchar_t *game_dir, int verify,
                     goto fail;
                 }
                 slash_to_backslash(native_jar);
+                library_index++;
                 if (ensure_file(native_jar, lib->native_url, lib->native_sha1,
                                 lib->native_size, verify, 0, 0,
+                                library_index, library_total,
                                 lib->native_classifier ?
                                 lib->native_classifier : "natives",
                                 error) != 0) {
@@ -628,6 +659,7 @@ int install_version(Version *version, const wchar_t *game_dir, int verify,
                         if (ensure_file(native_jar, lib->native_url,
                                         lib->native_sha1, lib->native_size,
                                         verify, 0, 0,
+                                        library_index, library_total,
                                         lib->native_classifier ?
                                         lib->native_classifier : "natives",
                                         error) != 0) {
@@ -677,8 +709,8 @@ int install_version(Version *version, const wchar_t *game_dir, int verify,
             goto fail;
         }
         if (ensure_file(log_path, version->logging.url, version->logging.sha1,
-                        version->logging.size, verify, 0, 0, "日志配置",
-                        error) != 0) {
+                        version->logging.size, verify, 0, 0, 1, 1,
+                        "日志配置", error) != 0) {
             free(log_path);
             goto fail;
         }

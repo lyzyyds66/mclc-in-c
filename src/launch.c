@@ -411,7 +411,8 @@ static void add_fallback_game_arguments(ArgList *game,
     args_add(game, vars_get(vars, "auth_player_name",
                             strlen("auth_player_name")));
     args_add(game, "--version");
-    args_add(game, version->id);
+    args_add(game, vars_get(vars, "version_name",
+                            strlen("version_name")));
     args_add(game, "--gameDir");
     args_add(game, vars_get(vars, "game_directory",
                             strlen("game_directory")));
@@ -451,6 +452,8 @@ static int build_arguments(const LaunchOptions *options, Version *version,
                            ArgList *jvm, ArgList *game, char **error)
 {
     wchar_t *game_dir = options->game_dir;
+    wchar_t *data_dir = (wchar_t *)(options->game_data_dir
+                                        ? options->game_data_dir : game_dir);
     wchar_t *versions_dir = path_join(game_dir, L"versions");
     wchar_t *version_dir = join_utf8_path(versions_dir, version->id);
     wchar_t *natives_dir = path_join(version_dir, L"natives");
@@ -464,6 +467,7 @@ static int build_arguments(const LaunchOptions *options, Version *version,
     char *libraries_utf8 = NULL;
     char *log_utf8 = NULL;
     char *game_assets_utf8 = NULL;
+    char *custom_info_utf8 = NULL;
     char *uuid = NULL;
     char *auth_session = NULL;
     char width_buf[32];
@@ -482,7 +486,7 @@ static int build_arguments(const LaunchOptions *options, Version *version,
     if (build_classpath(version, game_dir, &classpath, error) != 0) {
         goto fail;
     }
-    game_utf8 = path_to_utf8_alloc(game_dir);
+    game_utf8 = path_to_utf8_alloc(data_dir);
     assets_utf8 = path_to_utf8_alloc(assets_dir);
     natives_utf8 = path_to_utf8_alloc(natives_dir);
     libraries_utf8 = path_to_utf8_alloc(libraries_dir);
@@ -526,7 +530,11 @@ static int build_arguments(const LaunchOptions *options, Version *version,
     vars_init(&vars);
     vars_add(&vars, "auth_player_name",
              options->username ? options->username : "Player");
-    vars_add(&vars, "version_name", version->id);
+    if (options->custom_info && *options->custom_info) {
+        custom_info_utf8 = wide_to_utf8(options->custom_info);
+    }
+    vars_add(&vars, "version_name",
+             custom_info_utf8 ? custom_info_utf8 : version->id);
     vars_add(&vars, "game_directory", game_utf8);
     vars_add(&vars, "assets_root", assets_utf8);
     vars_add(&vars, "assets_index_name",
@@ -606,6 +614,16 @@ static int build_arguments(const LaunchOptions *options, Version *version,
         args_add_owned(jvm, libpath);
     }
 
+    if (options->window_title && *options->window_title) {
+        char *title = wide_to_utf8(options->window_title);
+        if (title) {
+            args_add(game, "--title");
+            args_add_owned(game, title);
+        }
+    }
+    if (options->fullscreen) {
+        args_add(game, "--fullscreen");
+    }
     args_add(jvm, version->main_class);
     if (options->extra_game) {
         size_t k;
@@ -630,6 +648,7 @@ static int build_arguments(const LaunchOptions *options, Version *version,
     free(libraries_utf8);
     free(log_utf8);
     free(game_assets_utf8);
+    free(custom_info_utf8);
     free(uuid);
     free(auth_session);
     return 0;
@@ -648,6 +667,7 @@ fail:
     free(libraries_utf8);
     free(log_utf8);
     free(game_assets_utf8);
+    free(custom_info_utf8);
     free(uuid);
     free(auth_session);
     return -1;
@@ -1114,6 +1134,11 @@ int launch_version(const LaunchOptions *options, Version *version,
         goto cleanup;
     }
     CloseHandle(process.hThread);
+    if (options->priority == 0) {
+        SetPriorityClass(process.hProcess, IDLE_PRIORITY_CLASS);
+    } else if (options->priority == 2) {
+        SetPriorityClass(process.hProcess, HIGH_PRIORITY_CLASS);
+    }
     printf("[*] 已启动 Minecraft，PID %lu\n",
            (unsigned long)process.dwProcessId);
     if (options->detach) {

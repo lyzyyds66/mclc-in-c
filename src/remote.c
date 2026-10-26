@@ -174,6 +174,7 @@ int remote_install_json(const wchar_t *game_dir, const RemoteVersion *entry,
         if (!verify || !entry->sha1 ||
             (sha1_file_hex(path, actual) == 0 &&
              _stricmp(actual, entry->sha1) == 0)) {
+            printf("  [版本元数据] 已存在且校验通过: %s\n", entry->id);
             free(path);
             return 0;
         }
@@ -186,7 +187,8 @@ int remote_install_json(const wchar_t *game_dir, const RemoteVersion *entry,
         free(path);
         return -1;
     }
-    printf("  + 版本元数据 %s\n", entry->id);
+    printf("  [版本元数据] %s\n", entry->id);
+    printf("          URL: %s\n", entry->url);
     if (http_download(url, path, 0, 0, error) != 0) {
         free(url);
         free(path);
@@ -202,6 +204,7 @@ int remote_install_json(const wchar_t *game_dir, const RemoteVersion *entry,
             return -1;
         }
     }
+    printf("  [版本元数据] 下载完成: %s\n", entry->id);
     free(path);
     return 0;
 }

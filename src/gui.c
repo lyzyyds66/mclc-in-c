@@ -7,6 +7,7 @@
  */
 #define _CRT_SECURE_NO_WARNINGS
 #include "util.h"
+#include "hash.h"
 #include "launch.h"
 #include "remote.h"
 #include "version.h"
@@ -32,6 +33,9 @@
 #define MCLC_GUI_CLASS L"MCLCGuiWindow"
 #define MCLC_PROGRESS_CLASS L"MCLCDownloadProgress"
 #define MCLC_PICKER_CLASS L"MCLCDownloadPicker"
+#define MCLC_USER_CLASS L"MCLCUserWindow"
+#define MCLC_NEWUSER_CLASS L"MCLCNewUserWindow"
+#define MCLC_SETTINGS_CLASS L"MCLCSettingsWindow"
 #define MCLC_GUI_TITLE L"MCLC - Minecraft Java 启动器"
 #define WM_APP_JOB_DONE (WM_APP + 1)
 #define WM_APP_PROGRESS (WM_APP + 2)
@@ -48,6 +52,8 @@ enum {
     ID_BROWSE_JAVA,
     ID_DEMO,
     ID_LAUNCH,
+    ID_USER_BUTTON,
+    ID_SETTINGS,
     ID_DOWNLOAD,
     ID_OPEN_DIR,
     ID_LOG,
@@ -56,7 +62,30 @@ enum {
 
     ID_PICK_CATEGORY = 300,
     ID_PICK_LIST,
-    ID_PICK_CONFIRM
+    ID_PICK_CONFIRM,
+
+    ID_PROFILE_COMBO = 400,
+    ID_PROFILE_NEW,
+    ID_PROFILE_OK,
+    ID_PROFILE_CANCEL,
+
+    ID_NEW_NAME = 450,
+    ID_NEW_UUID,
+    ID_NEW_SAVE,
+    ID_NEW_CANCEL,
+
+    ID_SET_ISOLATION = 500,
+    ID_SET_TITLE,
+    ID_SET_INFO,
+    ID_SET_PRIORITY,
+    ID_SET_MODE,
+    ID_SET_WIDTH,
+    ID_SET_HEIGHT,
+    ID_SET_JVM,
+    ID_SET_GAME,
+    ID_SET_PRE,
+    ID_SET_OK,
+    ID_SET_CANCEL
 };
 
 enum {
@@ -72,16 +101,52 @@ typedef struct {
     char *json_url;
     char *json_sha1;
     char *username;
+    char *uuid;
     wchar_t *java;
     int memory_mb;
     int demo;
     int verify;
+    wchar_t *window_title;
+    wchar_t *custom_info;
+    wchar_t *pre_launch;
+    int fullscreen;
+    int priority;
+    char **jvm_args;
+    size_t jvm_count;
+    char **game_args;
+    size_t game_count;
 } GuiJob;
 
 typedef struct {
     wchar_t *path;
     wchar_t *label;
 } JavaEntry;
+
+#define MCLC_MAX_PROFILES 64
+
+typedef struct {
+    wchar_t *name;
+    wchar_t *uuid;
+} Profile;
+
+typedef struct {
+    int version_isolation;
+    wchar_t *window_title;
+    wchar_t *custom_info;
+    int priority;      /* 0 low, 1 normal, 2 high */
+    int window_mode;   /* 0 default, 1 custom, 2 fullscreen */
+    int width;
+    int height;
+    wchar_t *jvm_args;
+    wchar_t *game_args;
+    wchar_t *pre_launch;
+} Settings;
+
+static Profile *g_profiles;
+static size_t g_profile_count;
+static size_t g_profile_current;
+static Settings g_settings;
+static wchar_t *g_config_path;
 
 static JavaEntry *g_java_entries;
 static size_t g_java_entry_count;
@@ -92,8 +157,9 @@ static HWND g_game_dir;
 static HWND g_browse_game;
 static HWND g_version;
 static HWND g_refresh;
-static HWND g_user;
 static HWND g_memory;
+static HWND g_user_button;
+static HWND g_settings_button;
 static HWND g_java;
 static HWND g_browse_java;
 static HWND g_demo;
@@ -201,6 +267,362 @@ static wchar_t *get_game_dir_value(void)
 static void set_status(const wchar_t *text)
 {
     SetWindowTextW(g_status, text);
+}
+
+/* ------------------------------------------------------------------ */
+/* Configuration (mclc_config.ini next to the executable)              */
+/* ------------------------------------------------------------------ */
+
+static void replace_wide(wchar_t **target, const wchar_t *value)
+{
+    free(*target);
+    *target = xwcsdup(value ? value : L"");
+}
+
+static wchar_t *exe_directory(void)
+{
+    wchar_t path[MAX_PATH];
+    DWORD n = GetModuleFileNameW(NULL, path, MAX_PATH);
+
+    if (n == 0 || n >= MAX_PATH) {
+        return NULL;
+    }
+    while (n > 0 && path[n - 1] != L'\\' && path[n - 1] != L'/') {
+        n--;
+    }
+    path[n] = L'\0';
+    return xwcsdup(path[0] ? path : L".");
+}
+
+static char *trim_ascii(char *text)
+{
+    char *end;
+    while (*text == ' ' || *text == '\t') {
+        text++;
+    }
+    end = text + strlen(text);
+    while (end > text && (end[-1] == ' ' || end[-1] == '\t' ||
+                          end[-1] == '\r' || end[-1] == '\n')) {
+        *--end = '\0';
+    }
+    return text;
+}
+
+static void free_profiles(void)
+{
+    size_t i;
+    for (i = 0; i < g_profile_count; i++) {
+        free(g_profiles[i].name);
+        free(g_profiles[i].uuid);
+    }
+    free(g_profiles);
+    g_profiles = NULL;
+    g_profile_count = 0;
+    g_profile_current = 0;
+}
+
+static void set_default_settings(void)
+{
+    memset(&g_settings, 0, sizeof(g_settings));
+    g_settings.priority = 1;
+    g_settings.window_mode = 0;
+    g_settings.width = 854;
+    g_settings.height = 480;
+    g_settings.window_title = xwcsdup(L"");
+    g_settings.custom_info = xwcsdup(L"");
+    g_settings.jvm_args = xwcsdup(L"");
+    g_settings.game_args = xwcsdup(L"");
+    g_settings.pre_launch = xwcsdup(L"");
+}
+
+static void ensure_default_profile(void)
+{
+    char uuid[37];
+    if (g_profile_count > 0) {
+        if (g_profile_current >= g_profile_count) {
+            g_profile_current = 0;
+        }
+        return;
+    }
+    if (offline_uuid_for_name("Steve", uuid) != 0) {
+        strcpy(uuid, "00000000-0000-3000-8000-000000000000");
+    }
+    g_profiles = (Profile *)xcalloc(1, sizeof(Profile));
+    g_profiles[0].name = xwcsdup(L"Steve");
+    {
+        wchar_t *wide_uuid = utf8_to_wide(uuid);
+        g_profiles[0].uuid = wide_uuid ? wide_uuid : xwcsdup(L"");
+    }
+    g_profile_count = 1;
+    g_profile_current = 0;
+}
+
+static void load_config(void)
+{
+    wchar_t *dir;
+    char *data = NULL;
+    char *line;
+    char *tmp_names[MCLC_MAX_PROFILES];
+    char *tmp_uuids[MCLC_MAX_PROFILES];
+    int section = 0;
+    int parsed_count = 0;
+    int parsed_current = 0;
+    int parsed_max = -1;
+    size_t i;
+
+    memset(tmp_names, 0, sizeof(tmp_names));
+    memset(tmp_uuids, 0, sizeof(tmp_uuids));
+    set_default_settings();
+    free_profiles();
+
+    dir = exe_directory();
+    g_config_path = dir ? path_join(dir, L"mclc_config.ini") : NULL;
+    free(dir);
+    if (g_config_path) {
+        data = read_text_file(g_config_path, NULL, NULL);
+    }
+
+    if (data) {
+        line = data;
+        if (strlen(line) >= 3 &&
+            (unsigned char)line[0] == 0xEF &&
+            (unsigned char)line[1] == 0xBB &&
+            (unsigned char)line[2] == 0xBF) {
+            line += 3;
+        }
+        while (*line) {
+            char *next = strchr(line, '\n');
+            char *text;
+            char *eq;
+            if (next) {
+                *next = '\0';
+            }
+            text = trim_ascii(line);
+            if (*text == '\0' || *text == ';' || *text == '#') {
+                /* skip */
+            } else if (text[0] == '[') {
+                if (_stricmp(text, "[profiles]") == 0) {
+                    section = 1;
+                } else if (_stricmp(text, "[settings]") == 0) {
+                    section = 2;
+                } else {
+                    section = 0;
+                }
+            } else if ((eq = strchr(text, '=')) != NULL) {
+                char *key;
+                char *value;
+                *eq = '\0';
+                key = trim_ascii(text);
+                value = trim_ascii(eq + 1);
+                if (section == 1) {
+                    if (_stricmp(key, "count") == 0) {
+                        parsed_count = atoi(value);
+                    } else if (_stricmp(key, "current") == 0) {
+                        parsed_current = atoi(value);
+                    } else if (_strnicmp(key, "name", 4) == 0) {
+                        int index = atoi(key + 4);
+                        if (index >= 0 && index < MCLC_MAX_PROFILES) {
+                            free(tmp_names[index]);
+                            tmp_names[index] = xstrdup(value);
+                            if (index > parsed_max) parsed_max = index;
+                        }
+                    } else if (_strnicmp(key, "uuid", 4) == 0) {
+                        int index = atoi(key + 4);
+                        if (index >= 0 && index < MCLC_MAX_PROFILES) {
+                            free(tmp_uuids[index]);
+                            tmp_uuids[index] = xstrdup(value);
+                            if (index > parsed_max) parsed_max = index;
+                        }
+                    }
+                } else if (section == 2) {
+                    if (_stricmp(key, "version_isolation") == 0) {
+                        g_settings.version_isolation = atoi(value) != 0;
+                    } else if (_stricmp(key, "window_title") == 0) {
+                        wchar_t *w = utf8_to_wide(value);
+                        replace_wide(&g_settings.window_title, w);
+                        free(w);
+                    } else if (_stricmp(key, "custom_info") == 0) {
+                        wchar_t *w = utf8_to_wide(value);
+                        replace_wide(&g_settings.custom_info, w);
+                        free(w);
+                    } else if (_stricmp(key, "priority") == 0) {
+                        int p = atoi(value);
+                        if (p >= 0 && p <= 2) g_settings.priority = p;
+                    } else if (_stricmp(key, "window_mode") == 0) {
+                        int m = atoi(value);
+                        if (m >= 0 && m <= 2) g_settings.window_mode = m;
+                    } else if (_stricmp(key, "width") == 0) {
+                        int w = atoi(value);
+                        if (w > 0) g_settings.width = w;
+                    } else if (_stricmp(key, "height") == 0) {
+                        int h = atoi(value);
+                        if (h > 0) g_settings.height = h;
+                    } else if (_stricmp(key, "jvm_args") == 0) {
+                        wchar_t *w = utf8_to_wide(value);
+                        replace_wide(&g_settings.jvm_args, w);
+                        free(w);
+                    } else if (_stricmp(key, "game_args") == 0) {
+                        wchar_t *w = utf8_to_wide(value);
+                        replace_wide(&g_settings.game_args, w);
+                        free(w);
+                    } else if (_stricmp(key, "pre_launch") == 0) {
+                        wchar_t *w = utf8_to_wide(value);
+                        replace_wide(&g_settings.pre_launch, w);
+                        free(w);
+                    }
+                }
+            }
+            if (!next) {
+                break;
+            }
+            line = next + 1;
+        }
+        free(data);
+    }
+
+    if (parsed_count <= 0) {
+        parsed_count = parsed_max + 1;
+    }
+    if (parsed_count > MCLC_MAX_PROFILES) {
+        parsed_count = MCLC_MAX_PROFILES;
+    }
+    for (i = 0; i < (size_t)parsed_count; i++) {
+        if (tmp_names[i] && *tmp_names[i]) {
+            g_profiles = (Profile *)xrealloc(
+                g_profiles, (g_profile_count + 1) * sizeof(Profile));
+            g_profiles[g_profile_count].name = utf8_to_wide(tmp_names[i]);
+            if (!g_profiles[g_profile_count].name) {
+                g_profiles[g_profile_count].name = xwcsdup(L"Player");
+            }
+            if (tmp_uuids[i] && *tmp_uuids[i]) {
+                g_profiles[g_profile_count].uuid =
+                    utf8_to_wide(tmp_uuids[i]);
+            } else {
+                char uuid[37];
+                if (offline_uuid_for_name(tmp_names[i], uuid) != 0) {
+                    strcpy(uuid, "00000000-0000-3000-8000-000000000000");
+                }
+                g_profiles[g_profile_count].uuid = utf8_to_wide(uuid);
+            }
+            if (!g_profiles[g_profile_count].uuid) {
+                g_profiles[g_profile_count].uuid = xwcsdup(L"");
+            }
+            g_profile_count++;
+        }
+        free(tmp_names[i]);
+        free(tmp_uuids[i]);
+    }
+    ensure_default_profile();
+    if (parsed_current >= 0 &&
+        (size_t)parsed_current < g_profile_count) {
+        g_profile_current = (size_t)parsed_current;
+    } else {
+        g_profile_current = 0;
+    }
+    gui_logf(L"配置文件：%ls（%zu 个用户名）",
+             g_config_path ? g_config_path : L"(无法定位)",
+             g_profile_count);
+}
+
+static char *config_value_utf8(const wchar_t *text)
+{
+    wchar_t *copy = xwcsdup(text ? text : L"");
+    wchar_t *p;
+    char *result;
+
+    for (p = copy; *p; p++) {
+        if (*p == L'\r' || *p == L'\n') {
+            *p = L' ';
+        }
+    }
+    result = wide_to_utf8(copy);
+    free(copy);
+    return result;
+}
+
+static void save_config(void)
+{
+    StrBuf sb;
+    size_t i;
+    int ok;
+
+    if (!g_config_path) {
+        return;
+    }
+    ensure_default_profile();
+    sb_init(&sb);
+    sb_append(&sb, "[profiles]\r\n");
+    {
+        char *line = format_utf8("count=%zu\r\ncurrent=%zu\r\n",
+                                 g_profile_count, g_profile_current);
+        sb_append(&sb, line);
+        free(line);
+    }
+    for (i = 0; i < g_profile_count; i++) {
+        char *name = wide_to_utf8(g_profiles[i].name);
+        char *uuid = wide_to_utf8(g_profiles[i].uuid);
+        char *line = format_utf8("name%zu=%s\r\nuuid%zu=%s\r\n",
+                                 i, name ? name : "Player",
+                                 i, uuid ? uuid : "");
+        sb_append(&sb, line);
+        free(line);
+        free(name);
+        free(uuid);
+    }
+    sb_append(&sb, "[settings]\r\n");
+    {
+        char *line = format_utf8(
+            "version_isolation=%d\r\n"
+            "priority=%d\r\n"
+            "window_mode=%d\r\n"
+            "width=%d\r\n"
+            "height=%d\r\n",
+            g_settings.version_isolation,
+            g_settings.priority,
+            g_settings.window_mode,
+            g_settings.width,
+            g_settings.height);
+        sb_append(&sb, line);
+        free(line);
+    }
+    {
+        char *title = config_value_utf8(g_settings.window_title);
+        char *info = config_value_utf8(g_settings.custom_info);
+        char *jvm = config_value_utf8(g_settings.jvm_args);
+        char *game = config_value_utf8(g_settings.game_args);
+        char *pre = config_value_utf8(g_settings.pre_launch);
+        char *line = format_utf8(
+            "window_title=%s\r\n"
+            "custom_info=%s\r\n"
+            "jvm_args=%s\r\n"
+            "game_args=%s\r\n"
+            "pre_launch=%s\r\n",
+            title ? title : "", info ? info : "",
+            jvm ? jvm : "", game ? game : "", pre ? pre : "");
+        sb_append(&sb, line);
+        free(line);
+        free(title);
+        free(info);
+        free(jvm);
+        free(game);
+        free(pre);
+    }
+    ok = write_file_all(g_config_path, sb.data, sb.len);
+    sb_free(&sb);
+    if (ok != 0) {
+        gui_logf(L"保存配置失败：%ls", g_config_path);
+    } else {
+        gui_logf(L"配置已保存：%ls", g_config_path);
+    }
+}
+
+static Profile *current_profile(void)
+{
+    if (g_profile_count == 0 ||
+        g_profile_current >= g_profile_count) {
+        return NULL;
+    }
+    return &g_profiles[g_profile_current];
 }
 
 /* ------------------------------------------------------------------ */
@@ -676,6 +1098,49 @@ static void append_log_text(const wchar_t *text)
     LeaveCriticalSection(&g_log_lock);
 }
 
+static void append_core_text(const wchar_t *text)
+{
+    static int at_line_start = 1;
+    wchar_t stamp[40];
+    SYSTEMTIME now;
+    size_t len;
+    size_t lines = 1;
+    size_t cap;
+    size_t i;
+    size_t j = 0;
+    wchar_t *out;
+
+    if (!text || !*text) {
+        return;
+    }
+    GetLocalTime(&now);
+    swprintf(stamp, 40, L"[%04u-%02u-%02u %02u:%02u:%02u] ",
+             (unsigned)now.wYear, (unsigned)now.wMonth, (unsigned)now.wDay,
+             (unsigned)now.wHour, (unsigned)now.wMinute,
+             (unsigned)now.wSecond);
+    len = wcslen(text);
+    for (i = 0; i < len; i++) {
+        if (text[i] == L'\n') lines++;
+    }
+    cap = len + (lines + 1) * wcslen(stamp) + 2;
+    out = (wchar_t *)xmalloc(cap * sizeof(wchar_t));
+    for (i = 0; i < len; i++) {
+        if (at_line_start) {
+            size_t sl = wcslen(stamp);
+            memcpy(out + j, stamp, sl * sizeof(wchar_t));
+            j += sl;
+            at_line_start = 0;
+        }
+        out[j++] = text[i];
+        if (text[i] == L'\n') {
+            at_line_start = 1;
+        }
+    }
+    out[j] = L'\0';
+    append_log_text(out);
+    free(out);
+}
+
 static void gui_logf(const wchar_t *fmt, ...)
 {
     wchar_t message[4096];
@@ -693,7 +1158,8 @@ static void gui_logf(const wchar_t *fmt, ...)
     message[4095] = L'\0';
 
     GetLocalTime(&now);
-    swprintf(line, 4224, L"[%02u:%02u:%02u] %s\r\n",
+    swprintf(line, 4224, L"[%04u-%02u-%02u %02u:%02u:%02u] %s\r\n",
+             (unsigned)now.wYear, (unsigned)now.wMonth, (unsigned)now.wDay,
              (unsigned)now.wHour, (unsigned)now.wMinute,
              (unsigned)now.wSecond, message);
     append_log_text(line);
@@ -780,7 +1246,7 @@ static void log_feed(const char *data, size_t len)
         }
     }
     out[j] = L'\0';
-    append_log_text(out);
+    append_core_text(out);
 
     free(out);
     free(wide);
@@ -1091,7 +1557,18 @@ static void free_job(GuiJob *job)
     free(job->json_url);
     free(job->json_sha1);
     free(job->username);
+    free(job->uuid);
     free(job->java);
+    free(job->window_title);
+    free(job->custom_info);
+    free(job->pre_launch);
+    {
+        size_t i;
+        for (i = 0; i < job->jvm_count; i++) free(job->jvm_args[i]);
+        free(job->jvm_args);
+        for (i = 0; i < job->game_count; i++) free(job->game_args[i]);
+        free(job->game_args);
+    }
     free(job);
 }
 
@@ -1132,10 +1609,54 @@ static char *ensure_version_json(const wchar_t *game_dir,
     return resolved;
 }
 
+static int run_pre_launch(const wchar_t *command, const wchar_t *directory,
+                          char **error)
+{
+    wchar_t *mutable_command;
+    STARTUPINFOW startup;
+    PROCESS_INFORMATION process;
+    DWORD exit_code = 0;
+    BOOL created;
+
+    if (!command || !*command) {
+        return 0;
+    }
+    mutable_command = xwcsdup(command);
+    memset(&startup, 0, sizeof(startup));
+    startup.cb = sizeof(startup);
+    memset(&process, 0, sizeof(process));
+    gui_logf(L"执行启动前命令：%ls", mutable_command);
+    created = CreateProcessW(NULL, mutable_command, NULL, NULL, TRUE,
+                             CREATE_NO_WINDOW, NULL, directory,
+                             &startup, &process);
+    free(mutable_command);
+    if (!created) {
+        set_error(error, "启动前命令执行失败（Windows 错误 %lu）",
+                  (unsigned long)GetLastError());
+        return -1;
+    }
+    CloseHandle(process.hThread);
+    WaitForSingleObject(process.hProcess, INFINITE);
+    if (!GetExitCodeProcess(process.hProcess, &exit_code)) {
+        CloseHandle(process.hProcess);
+        set_error(error, "无法读取启动前命令退出代码");
+        return -1;
+    }
+    CloseHandle(process.hProcess);
+    if (exit_code != 0) {
+        set_error(error, "启动前命令退出代码为 %lu",
+                  (unsigned long)exit_code);
+        return -1;
+    }
+    gui_logf(L"启动前命令执行完成。");
+    return 0;
+}
+
 static int job_launch(GuiJob *job, char **error)
 {
     Version version;
     LaunchOptions launch;
+    wchar_t *data_dir = NULL;
     int rc;
 
     if (version_load(job->game_dir, job->version_id, &version, error) != 0) {
@@ -1146,16 +1667,56 @@ static int job_launch(GuiJob *job, char **error)
         return -1;
     }
 
+    if (g_settings.version_isolation) {
+        wchar_t *wide_id = utf8_to_wide(version.id);
+        data_dir = wide_id ? path_join3(job->game_dir, L"versions", wide_id)
+                           : NULL;
+        free(wide_id);
+        if (!data_dir) {
+            set_error(error, "无法构造版本隔离目录");
+            version_free(&version);
+            return -1;
+        }
+        if (mkdir_p(data_dir) != 0) {
+            set_error(error, "无法创建版本隔离目录: %ls", data_dir);
+            free(data_dir);
+            version_free(&version);
+            return -1;
+        }
+        gui_logf(L"版本隔离目录：%ls", data_dir);
+    }
+
+    if (run_pre_launch(job->pre_launch, job->game_dir, error) != 0) {
+        free(data_dir);
+        version_free(&version);
+        return -1;
+    }
+
     memset(&launch, 0, sizeof(launch));
     launch.game_dir = job->game_dir;
+    launch.game_data_dir = data_dir;
     launch.username = job->username;
+    launch.uuid = job->uuid;
     launch.java = job->java;
     launch.memory_mb = job->memory_mb;
+    launch.window_title = job->window_title;
+    launch.custom_info = job->custom_info;
     launch.demo = job->demo;
+    launch.fullscreen = job->fullscreen;
+    launch.priority = job->priority;
+    launch.extra_jvm = (const char *const *)job->jvm_args;
+    launch.extra_jvm_count = job->jvm_count;
+    launch.extra_game = (const char *const *)job->game_args;
+    launch.extra_game_count = job->game_count;
+    if (g_settings.window_mode == 1) {
+        launch.width = g_settings.width;
+        launch.height = g_settings.height;
+    }
     launch.detach = 1;
     launch.gui_mode = 1;
     rc = launch_version(&launch, &version, error);
     version_free(&version);
+    free(data_dir);
     return rc < 0 ? -1 : 0;
 }
 
@@ -1278,12 +1839,13 @@ static void set_busy(BOOL busy)
     EnableWindow(g_browse_game, !busy);
     EnableWindow(g_version, !busy);
     EnableWindow(g_refresh, !busy);
-    EnableWindow(g_user, !busy);
     EnableWindow(g_memory, !busy);
     EnableWindow(g_java, !busy);
     EnableWindow(g_browse_java, !busy);
     EnableWindow(g_demo, !busy);
     EnableWindow(g_launch, !busy);
+    EnableWindow(g_user_button, !busy);
+    EnableWindow(g_settings_button, !busy);
     EnableWindow(g_download, !busy);
     EnableWindow(g_open_dir, !busy);
 }
@@ -1313,15 +1875,11 @@ static void create_controls(HWND hwnd)
     g_refresh = make_control(L"BUTTON", L"刷新", BS_PUSHBUTTON,
                              0, 648, 54, 96, 26, ID_REFRESH);
 
-    make_label(L"用户名", 16, 97, 78, 22);
-    g_user = make_control(L"EDIT", L"Steve",
-                          WS_BORDER | ES_AUTOHSCROLL,
-                          WS_EX_CLIENTEDGE, 100, 94, 220, 26, ID_USER);
-    make_label(L"内存 MB", 340, 97, 64, 22);
+    make_label(L"内存 MB", 16, 97, 78, 22);
     g_memory = make_control(L"EDIT", L"2048",
                             WS_BORDER | ES_NUMBER | ES_AUTOHSCROLL,
-                            WS_EX_CLIENTEDGE, 408, 94, 80, 26, ID_MEMORY);
-    make_label(L"Java 支持多版本选择", 500, 97, 180, 22);
+                            WS_EX_CLIENTEDGE, 100, 94, 100, 26, ID_MEMORY);
+    make_label(L"Java 支持多版本选择", 220, 97, 180, 22);
 
     make_label(L"Java", 16, 135, 78, 22);
     g_java = make_control(L"COMBOBOX", L"",
@@ -1340,12 +1898,18 @@ static void create_controls(HWND hwnd)
 
     g_launch = make_control(L"BUTTON", L"启动游戏", BS_PUSHBUTTON | WS_TABSTOP,
                             0, 100, 202, 140, 34, ID_LAUNCH);
+    g_user_button = make_control(L"BUTTON", L"用户名",
+                                 BS_PUSHBUTTON | WS_TABSTOP, 0,
+                                 250, 202, 110, 34, ID_USER_BUTTON);
+    g_settings_button = make_control(L"BUTTON", L"设置",
+                                     BS_PUSHBUTTON | WS_TABSTOP, 0,
+                                     370, 202, 100, 34, ID_SETTINGS);
     g_download = make_control(L"BUTTON", L"下载游戏",
                               BS_PUSHBUTTON | WS_TABSTOP, 0,
-                              252, 202, 170, 34, ID_DOWNLOAD);
-    g_open_dir = make_control(L"BUTTON", L"打开游戏目录",
+                              480, 202, 130, 34, ID_DOWNLOAD);
+    g_open_dir = make_control(L"BUTTON", L"打开目录",
                               BS_PUSHBUTTON | WS_TABSTOP, 0,
-                              434, 202, 140, 34, ID_OPEN_DIR);
+                              620, 202, 124, 34, ID_OPEN_DIR);
 
     make_label(L"日志", 16, 246, 78, 22);
     g_log = make_control(
@@ -1559,10 +2123,66 @@ static int start_job(GuiJob *job, const wchar_t *status)
     return 1;
 }
 
+static void free_arg_list(char **items, size_t count)
+{
+    size_t i;
+    for (i = 0; i < count; i++) {
+        free(items[i]);
+    }
+    free(items);
+}
+
+static int split_args_utf8(const wchar_t *text, char ***out, size_t *count,
+                           char **error)
+{
+    wchar_t *command;
+    LPWSTR *argv;
+    int argc = 0;
+    size_t i;
+    size_t n;
+    char **items = NULL;
+    int rc = -1;
+
+    *out = NULL;
+    *count = 0;
+    if (!text || !*text) {
+        return 0;
+    }
+    command = (wchar_t *)xmalloc((wcslen(text) + 8) * sizeof(wchar_t));
+    wcscpy(command, L"mclc ");
+    wcscat(command, text);
+    argv = CommandLineToArgvW(command, &argc);
+    free(command);
+    if (!argv) {
+        set_error(error, "参数解析失败");
+        return -1;
+    }
+    n = argc > 1 ? (size_t)(argc - 1) : 0;
+    if (n) {
+        items = (char **)xcalloc(n, sizeof(char *));
+        for (i = 0; i < n; i++) {
+            items[i] = wide_to_utf8(argv[i + 1]);
+            if (!items[i]) {
+                set_error(error, "参数编码无效");
+                goto done;
+            }
+        }
+    }
+    *out = items;
+    *count = n;
+    items = NULL;
+    rc = 0;
+
+done:
+    LocalFree(argv);
+    free_arg_list(items, n);
+    return rc;
+}
+
 static GuiJob *base_job(int kind)
 {
     GuiJob *job = (GuiJob *)xcalloc(1, sizeof(GuiJob));
-    wchar_t *user;
+    Profile *profile;
     wchar_t *memory_text;
     int memory;
 
@@ -1591,16 +2211,20 @@ static GuiJob *base_job(int kind)
     }
     job->verify = 0;
 
-    user = get_control_text(g_user);
-    if (!*user) {
-        free(user);
-        user = xwcsdup(L"Steve");
+    profile = current_profile();
+    if (!profile) {
+        gui_logf(L"启动失败：没有可用的用户名。");
+        MessageBoxW(g_hwnd, L"请先在“用户名”中创建一个用户名。",
+                    L"MCLC", MB_ICONWARNING);
+        free_job(job);
+        return NULL;
     }
-    job->username = wide_to_utf8(user);
-    free(user);
-    if (!job->username) {
-        gui_logf(L"任务失败：用户名编码无效。");
-        MessageBoxW(g_hwnd, L"用户名编码无效。", L"MCLC", MB_ICONERROR);
+    job->username = wide_to_utf8(profile->name);
+    job->uuid = wide_to_utf8(profile->uuid);
+    if (!job->username || !job->uuid) {
+        gui_logf(L"任务失败：用户名或 UUID 编码无效。");
+        MessageBoxW(g_hwnd, L"用户名或 UUID 编码无效。", L"MCLC",
+                    MB_ICONERROR);
         free_job(job);
         return NULL;
     }
@@ -1619,6 +2243,21 @@ static GuiJob *base_job(int kind)
 
     job->java = get_selected_java_path();
     job->demo = (IsDlgButtonChecked(g_hwnd, ID_DEMO) == BST_CHECKED);
+    job->window_title = xwcsdup(g_settings.window_title);
+    job->custom_info = xwcsdup(g_settings.custom_info);
+    job->pre_launch = xwcsdup(g_settings.pre_launch);
+    job->fullscreen = g_settings.window_mode == 2;
+    job->priority = g_settings.priority;
+    if (split_args_utf8(g_settings.jvm_args, &job->jvm_args,
+                        &job->jvm_count, NULL) != 0 ||
+        split_args_utf8(g_settings.game_args, &job->game_args,
+                        &job->game_count, NULL) != 0) {
+        gui_logf(L"启动失败：JVM/游戏参数解析失败。");
+        MessageBoxW(g_hwnd, L"JVM 或游戏参数格式无效。", L"MCLC",
+                    MB_ICONERROR);
+        free_job(job);
+        return NULL;
+    }
     return job;
 }
 
@@ -1647,12 +2286,16 @@ static void start_launch(void)
         wchar_t *wide_id = utf8_to_wide(id);
         wchar_t *wide_user = job->username
                                  ? utf8_to_wide(job->username) : NULL;
-        gui_logf(L"用户点击启动游戏：版本=%ls，用户=%ls，内存=%d MB，"
-                 L"Java=%ls，演示=%ls，目录=%ls",
+        wchar_t *wide_uuid = job->uuid
+                                 ? utf8_to_wide(job->uuid) : NULL;
+        gui_logf(L"用户点击启动游戏：版本=%ls，用户=%ls，UUID=%ls，"
+                 L"内存=%d MB，Java=%ls，演示=%ls，目录=%ls",
                  wide_id ? wide_id : L"(未知)",
-                 wide_user ? wide_user : L"Steve", job->memory_mb,
+                 wide_user ? wide_user : L"Steve",
+                 wide_uuid ? wide_uuid : L"(自动)", job->memory_mb,
                  job->java ? job->java : L"自动查找",
                  job->demo ? L"是" : L"否", job->game_dir);
+        free(wide_uuid);
         free(wide_user);
         free(wide_id);
     }
@@ -2133,6 +2776,696 @@ static void open_download_picker(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* User profile window                                                 */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    HWND hwnd;
+    HWND combo;
+} UserState;
+
+typedef struct {
+    HWND hwnd;
+    HWND name;
+    HWND uuid;
+    int saved;
+} NewUserState;
+
+static wchar_t *trim_wide_copy(const wchar_t *text)
+{
+    const wchar_t *start;
+    const wchar_t *end;
+    size_t len;
+    wchar_t *out;
+
+    if (!text) {
+        return xwcsdup(L"");
+    }
+    start = text;
+    while (*start == L' ' || *start == L'\t' ||
+           *start == L'\r' || *start == L'\n') {
+        start++;
+    }
+    end = start + wcslen(start);
+    while (end > start && (end[-1] == L' ' || end[-1] == L'\t' ||
+                           end[-1] == L'\r' || end[-1] == L'\n')) {
+        end--;
+    }
+    len = (size_t)(end - start);
+    out = (wchar_t *)xmalloc((len + 1) * sizeof(wchar_t));
+    memcpy(out, start, len * sizeof(wchar_t));
+    out[len] = L'\0';
+    return out;
+}
+
+static wchar_t *get_trimmed_control_text(HWND control)
+{
+    wchar_t *text = get_control_text(control);
+    wchar_t *trimmed = trim_wide_copy(text);
+    free(text);
+    return trimmed;
+}
+
+static void set_setting_from_control(wchar_t **target, HWND control)
+{
+    wchar_t *text = get_control_text(control);
+    replace_wide(target, text);
+    free(text);
+}
+
+static int uuid_is_valid(const wchar_t *uuid)
+{
+    int hex = 0;
+    const wchar_t *p;
+    for (p = uuid; *p; p++) {
+        if ((*p >= L'0' && *p <= L'9') ||
+            (*p >= L'a' && *p <= L'f') ||
+            (*p >= L'A' && *p <= L'F')) {
+            hex++;
+        } else if (*p != L'-') {
+            return 0;
+        }
+    }
+    return hex == 32;
+}
+
+static void fill_profile_combo(UserState *state, size_t select)
+{
+    size_t i;
+    SendMessageW(state->combo, CB_RESETCONTENT, 0, 0);
+    for (i = 0; i < g_profile_count; i++) {
+        size_t cap = wcslen(g_profiles[i].name) +
+                     wcslen(g_profiles[i].uuid) + 8;
+        wchar_t *label = (wchar_t *)xmalloc(cap * sizeof(wchar_t));
+        swprintf(label, cap, L"%ls (%ls)", g_profiles[i].name,
+                 g_profiles[i].uuid);
+        SendMessageW(state->combo, CB_ADDSTRING, 0, (LPARAM)label);
+        free(label);
+    }
+    if (select >= g_profile_count) {
+        select = 0;
+    }
+    SendMessageW(state->combo, CB_SETCURSEL, (WPARAM)select, 0);
+}
+
+static LRESULT CALLBACK new_user_proc(HWND hwnd, UINT message,
+                                      WPARAM wparam, LPARAM lparam)
+{
+    NewUserState *state = (NewUserState *)GetWindowLongPtrW(
+        hwnd, GWLP_USERDATA);
+
+    switch (message) {
+    case WM_CREATE: {
+        CREATESTRUCTW *create = (CREATESTRUCTW *)lparam;
+        state = (NewUserState *)create->lpCreateParams;
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)state);
+        state->hwnd = hwnd;
+        CreateWindowExW(0, L"STATIC", L"用户名",
+                        WS_CHILD | WS_VISIBLE | SS_LEFT,
+                        16, 22, 80, 22, hwnd, NULL, g_instance, NULL);
+        state->name = CreateWindowExW(
+            0, L"EDIT", L"",
+            WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+            100, 18, 320, 26, hwnd,
+            (HMENU)(INT_PTR)ID_NEW_NAME, g_instance, NULL);
+        CreateWindowExW(0, L"STATIC", L"UUID（留空自动生成）",
+                        WS_CHILD | WS_VISIBLE | SS_LEFT,
+                        16, 62, 80, 40, hwnd, NULL, g_instance, NULL);
+        state->uuid = CreateWindowExW(
+            0, L"EDIT", L"",
+            WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+            100, 58, 320, 26, hwnd,
+            (HMENU)(INT_PTR)ID_NEW_UUID, g_instance, NULL);
+        CreateWindowExW(0, L"BUTTON", L"保存",
+                        WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+                        BS_DEFPUSHBUTTON,
+                        230, 110, 90, 30, hwnd,
+                        (HMENU)(INT_PTR)ID_NEW_SAVE, g_instance, NULL);
+        CreateWindowExW(0, L"BUTTON", L"取消",
+                        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                        330, 110, 90, 30, hwnd,
+                        (HMENU)(INT_PTR)ID_NEW_CANCEL, g_instance, NULL);
+        SendMessageW(state->name, WM_SETFONT, (WPARAM)g_font, TRUE);
+        SendMessageW(state->uuid, WM_SETFONT, (WPARAM)g_font, TRUE);
+        SetFocus(state->name);
+        return 0;
+    }
+
+    case WM_COMMAND:
+        if (LOWORD(wparam) == ID_NEW_SAVE ||
+            LOWORD(wparam) == IDOK) {
+            wchar_t *name = get_trimmed_control_text(state->name);
+            wchar_t *uuid = get_trimmed_control_text(state->uuid);
+            char *name_utf8;
+            wchar_t *final_uuid = NULL;
+            char generated[37];
+            if (!*name) {
+                MessageBoxW(hwnd, L"用户名不能为空。", L"MCLC",
+                            MB_ICONWARNING);
+            } else if (g_profile_count >= MCLC_MAX_PROFILES) {
+                MessageBoxW(hwnd, L"用户名数量已达上限。", L"MCLC",
+                            MB_ICONWARNING);
+            } else {
+                name_utf8 = wide_to_utf8(name);
+                if (*uuid) {
+                    if (!uuid_is_valid(uuid)) {
+                        MessageBoxW(hwnd,
+                                    L"UUID 格式无效，应包含 32 个十六进制字符。",
+                                    L"MCLC", MB_ICONWARNING);
+                        free(name);
+                        free(uuid);
+                        free(name_utf8);
+                        return 0;
+                    }
+                    final_uuid = xwcsdup(uuid);
+                } else {
+                    if (offline_uuid_for_name(
+                            name_utf8 ? name_utf8 : "Player",
+                            generated) != 0) {
+                        strcpy(generated,
+                               "00000000-0000-3000-8000-000000000000");
+                    }
+                    final_uuid = utf8_to_wide(generated);
+                }
+                if (!name_utf8 || !final_uuid) {
+                    MessageBoxW(hwnd, L"用户名或 UUID 编码无效。", L"MCLC",
+                                MB_ICONERROR);
+                } else {
+                    g_profiles = (Profile *)xrealloc(
+                        g_profiles,
+                        (g_profile_count + 1) * sizeof(Profile));
+                    g_profiles[g_profile_count].name = name;
+                    g_profiles[g_profile_count].uuid = final_uuid;
+                    g_profile_count++;
+                    g_profile_current = g_profile_count - 1;
+                    name = NULL;
+                    final_uuid = NULL;
+                    save_config();
+                    state->saved = 1;
+                    gui_logf(L"新增用户名：%ls", g_profiles[g_profile_current].name);
+                    DestroyWindow(hwnd);
+                }
+                free(name_utf8);
+            }
+            free(name);
+            free(uuid);
+            free(final_uuid);
+            return 0;
+        }
+        if (LOWORD(wparam) == ID_NEW_CANCEL ||
+            LOWORD(wparam) == IDCANCEL) {
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        break;
+
+    case WM_CLOSE:
+        DestroyWindow(hwnd);
+        return 0;
+
+    default:
+        break;
+    }
+    return DefWindowProcW(hwnd, message, wparam, lparam);
+}
+
+static void open_new_user(UserState *owner)
+{
+    WNDCLASSW wc;
+    NewUserState state;
+    RECT owner_rect;
+    RECT rect;
+    MSG msg;
+    int quit = 0;
+
+    memset(&state, 0, sizeof(state));
+    memset(&wc, 0, sizeof(wc));
+    wc.lpfnWndProc = new_user_proc;
+    wc.hInstance = g_instance;
+    wc.hCursor = LoadCursorW(NULL, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    wc.lpszClassName = MCLC_NEWUSER_CLASS;
+    if (!RegisterClassW(&wc) &&
+        GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+        return;
+    }
+    GetWindowRect(owner->hwnd, &owner_rect);
+    rect.left = 0;
+    rect.top = 0;
+    rect.right = 450;
+    rect.bottom = 170;
+    AdjustWindowRectEx(&rect, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+                       FALSE, 0);
+    EnableWindow(owner->hwnd, FALSE);
+    state.hwnd = CreateWindowExW(
+        WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
+        MCLC_NEWUSER_CLASS, L"新建用户名",
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+        owner_rect.left + 30, owner_rect.top + 40,
+        rect.right - rect.left, rect.bottom - rect.top,
+        owner->hwnd, NULL, g_instance, &state);
+    if (!state.hwnd) {
+        EnableWindow(owner->hwnd, TRUE);
+        return;
+    }
+    ShowWindow(state.hwnd, SW_SHOW);
+    UpdateWindow(state.hwnd);
+    while (IsWindow(state.hwnd)) {
+        int result = GetMessageW(&msg, NULL, 0, 0);
+        if (result <= 0) {
+            if (result == 0) {
+                PostQuitMessage((int)msg.wParam);
+                quit = 1;
+            }
+            break;
+        }
+        if (!IsDialogMessageW(state.hwnd, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+    EnableWindow(owner->hwnd, TRUE);
+    SetForegroundWindow(owner->hwnd);
+    if (!quit && state.saved) {
+        fill_profile_combo(owner, g_profile_current);
+        gui_logf(L"用户名已保存到 mclc_config.ini。");
+    }
+}
+
+static LRESULT CALLBACK user_proc(HWND hwnd, UINT message,
+                                  WPARAM wparam, LPARAM lparam)
+{
+    UserState *state = (UserState *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+
+    switch (message) {
+    case WM_CREATE: {
+        CREATESTRUCTW *create = (CREATESTRUCTW *)lparam;
+        state = (UserState *)create->lpCreateParams;
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)state);
+        state->hwnd = hwnd;
+        CreateWindowExW(0, L"STATIC", L"选择用户名和 UUID",
+                        WS_CHILD | WS_VISIBLE | SS_LEFT,
+                        16, 20, 418, 22, hwnd, NULL, g_instance, NULL);
+        state->combo = CreateWindowExW(
+            0, L"COMBOBOX", L"",
+            WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL |
+            WS_TABSTOP, 16, 48, 418, 220, hwnd,
+            (HMENU)(INT_PTR)ID_PROFILE_COMBO, g_instance, NULL);
+        CreateWindowExW(0, L"BUTTON", L"新建",
+                        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                        16, 92, 90, 30, hwnd,
+                        (HMENU)(INT_PTR)ID_PROFILE_NEW, g_instance, NULL);
+        CreateWindowExW(0, L"BUTTON", L"确定",
+                        WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+                        BS_DEFPUSHBUTTON,
+                        240, 92, 90, 30, hwnd,
+                        (HMENU)(INT_PTR)ID_PROFILE_OK, g_instance, NULL);
+        CreateWindowExW(0, L"BUTTON", L"取消",
+                        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                        340, 92, 90, 30, hwnd,
+                        (HMENU)(INT_PTR)ID_PROFILE_CANCEL, g_instance, NULL);
+        SendMessageW(state->combo, WM_SETFONT, (WPARAM)g_font, TRUE);
+        fill_profile_combo(state, g_profile_current);
+        return 0;
+    }
+
+    case WM_COMMAND:
+        if (LOWORD(wparam) == ID_PROFILE_NEW) {
+            open_new_user(state);
+            return 0;
+        }
+        if (LOWORD(wparam) == ID_PROFILE_OK ||
+            LOWORD(wparam) == IDOK) {
+            LRESULT sel = SendMessageW(state->combo, CB_GETCURSEL, 0, 0);
+            if (sel != CB_ERR && (size_t)sel < g_profile_count) {
+                g_profile_current = (size_t)sel;
+                save_config();
+                gui_logf(L"当前用户名：%ls",
+                         g_profiles[g_profile_current].name);
+                DestroyWindow(hwnd);
+            }
+            return 0;
+        }
+        if (LOWORD(wparam) == ID_PROFILE_CANCEL ||
+            LOWORD(wparam) == IDCANCEL) {
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        break;
+
+    case WM_CLOSE:
+        DestroyWindow(hwnd);
+        return 0;
+
+    default:
+        break;
+    }
+    return DefWindowProcW(hwnd, message, wparam, lparam);
+}
+
+static void open_user_window(void)
+{
+    WNDCLASSW wc;
+    gui_logf(L"用户点击用户名设置。");
+    UserState state;
+    RECT owner;
+    RECT rect;
+    MSG msg;
+    int quit = 0;
+
+    memset(&state, 0, sizeof(state));
+    memset(&wc, 0, sizeof(wc));
+    wc.lpfnWndProc = user_proc;
+    wc.hInstance = g_instance;
+    wc.hCursor = LoadCursorW(NULL, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    wc.lpszClassName = MCLC_USER_CLASS;
+    if (!RegisterClassW(&wc) &&
+        GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+        return;
+    }
+    GetWindowRect(g_hwnd, &owner);
+    rect.left = 0;
+    rect.top = 0;
+    rect.right = 450;
+    rect.bottom = 150;
+    AdjustWindowRectEx(&rect, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+                       FALSE, 0);
+    EnableWindow(g_hwnd, FALSE);
+    state.hwnd = CreateWindowExW(
+        WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
+        MCLC_USER_CLASS, L"用户名",
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+        owner.left + 40, owner.top + 40,
+        rect.right - rect.left, rect.bottom - rect.top,
+        g_hwnd, NULL, g_instance, &state);
+    if (!state.hwnd) {
+        EnableWindow(g_hwnd, TRUE);
+        return;
+    }
+    ShowWindow(state.hwnd, SW_SHOW);
+    UpdateWindow(state.hwnd);
+    while (IsWindow(state.hwnd)) {
+        int result = GetMessageW(&msg, NULL, 0, 0);
+        if (result <= 0) {
+            if (result == 0) {
+                PostQuitMessage((int)msg.wParam);
+                quit = 1;
+            }
+            break;
+        }
+        if (!IsDialogMessageW(state.hwnd, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+    EnableWindow(g_hwnd, TRUE);
+    SetForegroundWindow(g_hwnd);
+    if (quit) {
+        return;
+    }
+    set_status(L"用户名设置已更新。");
+}
+
+/* ------------------------------------------------------------------ */
+/* Settings window                                                     */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    HWND hwnd;
+    HWND isolation;
+    HWND title;
+    HWND info;
+    HWND priority;
+    HWND mode;
+    HWND width;
+    HWND height;
+    HWND jvm;
+    HWND game;
+    HWND pre;
+} SettingsState;
+
+static LRESULT CALLBACK settings_proc(HWND hwnd, UINT message,
+                                      WPARAM wparam, LPARAM lparam)
+{
+    SettingsState *state = (SettingsState *)GetWindowLongPtrW(
+        hwnd, GWLP_USERDATA);
+
+    switch (message) {
+    case WM_CREATE: {
+        CREATESTRUCTW *create = (CREATESTRUCTW *)lparam;
+        state = (SettingsState *)create->lpCreateParams;
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)state);
+        state->hwnd = hwnd;
+        state->isolation = CreateWindowExW(
+            0, L"BUTTON", L"开启版本隔离（保存到 versions/<版本>/）",
+            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_TABSTOP,
+            16, 16, 420, 24, hwnd,
+            (HMENU)(INT_PTR)ID_SET_ISOLATION, g_instance, NULL);
+        CreateWindowExW(0, L"STATIC", L"游戏窗口标题",
+                        WS_CHILD | WS_VISIBLE | SS_LEFT,
+                        16, 52, 120, 22, hwnd, NULL, g_instance, NULL);
+        state->title = CreateWindowExW(
+            0, L"EDIT", L"",
+            WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+            150, 48, 380, 26, hwnd,
+            (HMENU)(INT_PTR)ID_SET_TITLE, g_instance, NULL);
+        CreateWindowExW(0, L"STATIC", L"自定义信息",
+                        WS_CHILD | WS_VISIBLE | SS_LEFT,
+                        16, 84, 120, 22, hwnd, NULL, g_instance, NULL);
+        state->info = CreateWindowExW(
+            0, L"EDIT", L"",
+            WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+            150, 80, 380, 26, hwnd,
+            (HMENU)(INT_PTR)ID_SET_INFO, g_instance, NULL);
+        CreateWindowExW(0, L"STATIC", L"进程优先级",
+                        WS_CHILD | WS_VISIBLE | SS_LEFT,
+                        16, 116, 120, 22, hwnd, NULL, g_instance, NULL);
+        state->priority = CreateWindowExW(
+            0, L"COMBOBOX", L"",
+            WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_TABSTOP,
+            150, 112, 120, 160, hwnd,
+            (HMENU)(INT_PTR)ID_SET_PRIORITY, g_instance, NULL);
+        SendMessageW(state->priority, CB_ADDSTRING, 0, (LPARAM)L"低");
+        SendMessageW(state->priority, CB_ADDSTRING, 0, (LPARAM)L"中");
+        SendMessageW(state->priority, CB_ADDSTRING, 0, (LPARAM)L"高");
+        SendMessageW(state->priority, CB_SETCURSEL,
+                     (WPARAM)g_settings.priority, 0);
+
+        CreateWindowExW(0, L"STATIC", L"窗口大小",
+                        WS_CHILD | WS_VISIBLE | SS_LEFT,
+                        300, 116, 70, 22, hwnd, NULL, g_instance, NULL);
+        state->mode = CreateWindowExW(
+            0, L"COMBOBOX", L"",
+            WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_TABSTOP,
+            370, 112, 100, 160, hwnd,
+            (HMENU)(INT_PTR)ID_SET_MODE, g_instance, NULL);
+        SendMessageW(state->mode, CB_ADDSTRING, 0, (LPARAM)L"默认");
+        SendMessageW(state->mode, CB_ADDSTRING, 0, (LPARAM)L"自定义");
+        SendMessageW(state->mode, CB_ADDSTRING, 0, (LPARAM)L"全屏");
+        SendMessageW(state->mode, CB_SETCURSEL,
+                     (WPARAM)g_settings.window_mode, 0);
+
+        CreateWindowExW(0, L"STATIC", L"宽",
+                        WS_CHILD | WS_VISIBLE | SS_LEFT,
+                        16, 148, 30, 22, hwnd, NULL, g_instance, NULL);
+        state->width = CreateWindowExW(
+            0, L"EDIT", L"",
+            WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
+            50, 144, 70, 26, hwnd,
+            (HMENU)(INT_PTR)ID_SET_WIDTH, g_instance, NULL);
+        CreateWindowExW(0, L"STATIC", L"高",
+                        WS_CHILD | WS_VISIBLE | SS_LEFT,
+                        140, 148, 30, 22, hwnd, NULL, g_instance, NULL);
+        state->height = CreateWindowExW(
+            0, L"EDIT", L"",
+            WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
+            174, 144, 70, 26, hwnd,
+            (HMENU)(INT_PTR)ID_SET_HEIGHT, g_instance, NULL);
+
+        CreateWindowExW(0, L"STATIC", L"JVM 参数",
+                        WS_CHILD | WS_VISIBLE | SS_LEFT,
+                        16, 182, 120, 22, hwnd, NULL, g_instance, NULL);
+        state->jvm = CreateWindowExW(
+            WS_EX_CLIENTEDGE, L"EDIT", L"",
+            WS_CHILD | WS_VISIBLE | WS_BORDER | ES_MULTILINE |
+            ES_AUTOVSCROLL | WS_VSCROLL,
+            150, 178, 380, 64, hwnd,
+            (HMENU)(INT_PTR)ID_SET_JVM, g_instance, NULL);
+        CreateWindowExW(0, L"STATIC", L"游戏参数",
+                        WS_CHILD | WS_VISIBLE | SS_LEFT,
+                        16, 252, 120, 22, hwnd, NULL, g_instance, NULL);
+        state->game = CreateWindowExW(
+            WS_EX_CLIENTEDGE, L"EDIT", L"",
+            WS_CHILD | WS_VISIBLE | WS_BORDER | ES_MULTILINE |
+            ES_AUTOVSCROLL | WS_VSCROLL,
+            150, 248, 380, 64, hwnd,
+            (HMENU)(INT_PTR)ID_SET_GAME, g_instance, NULL);
+        CreateWindowExW(0, L"STATIC", L"启动前命令",
+                        WS_CHILD | WS_VISIBLE | SS_LEFT,
+                        16, 322, 120, 22, hwnd, NULL, g_instance, NULL);
+        state->pre = CreateWindowExW(
+            WS_EX_CLIENTEDGE, L"EDIT", L"",
+            WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+            150, 318, 380, 26, hwnd,
+            (HMENU)(INT_PTR)ID_SET_PRE, g_instance, NULL);
+        CreateWindowExW(0, L"BUTTON", L"保存",
+                        WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+                        BS_DEFPUSHBUTTON,
+                        340, 370, 90, 30, hwnd,
+                        (HMENU)(INT_PTR)ID_SET_OK, g_instance, NULL);
+        CreateWindowExW(0, L"BUTTON", L"取消",
+                        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                        440, 370, 90, 30, hwnd,
+                        (HMENU)(INT_PTR)ID_SET_CANCEL, g_instance, NULL);
+
+        SendMessageW(state->isolation, BM_SETCHECK,
+                     g_settings.version_isolation ? BST_CHECKED
+                                                  : BST_UNCHECKED, 0);
+        SetWindowTextW(state->title, g_settings.window_title);
+        SetWindowTextW(state->info, g_settings.custom_info);
+        SetWindowTextW(state->jvm, g_settings.jvm_args);
+        SetWindowTextW(state->game, g_settings.game_args);
+        SetWindowTextW(state->pre, g_settings.pre_launch);
+        {
+            wchar_t buf[32];
+            swprintf(buf, 32, L"%d", g_settings.width);
+            SetWindowTextW(state->width, buf);
+            swprintf(buf, 32, L"%d", g_settings.height);
+            SetWindowTextW(state->height, buf);
+        }
+        SendMessageW(state->isolation, WM_SETFONT, (WPARAM)g_font, TRUE);
+        SendMessageW(state->title, WM_SETFONT, (WPARAM)g_font, TRUE);
+        SendMessageW(state->info, WM_SETFONT, (WPARAM)g_font, TRUE);
+        SendMessageW(state->priority, WM_SETFONT, (WPARAM)g_font, TRUE);
+        SendMessageW(state->mode, WM_SETFONT, (WPARAM)g_font, TRUE);
+        SendMessageW(state->width, WM_SETFONT, (WPARAM)g_font, TRUE);
+        SendMessageW(state->height, WM_SETFONT, (WPARAM)g_font, TRUE);
+        SendMessageW(state->jvm, WM_SETFONT, (WPARAM)g_font, TRUE);
+        SendMessageW(state->game, WM_SETFONT, (WPARAM)g_font, TRUE);
+        SendMessageW(state->pre, WM_SETFONT, (WPARAM)g_font, TRUE);
+        return 0;
+    }
+
+    case WM_COMMAND:
+        if (LOWORD(wparam) == ID_SET_OK ||
+            LOWORD(wparam) == IDOK) {
+            int mode = (int)SendMessageW(state->mode, CB_GETCURSEL, 0, 0);
+            int priority = (int)SendMessageW(state->priority,
+                                             CB_GETCURSEL, 0, 0);
+            wchar_t *width = get_control_text(state->width);
+            wchar_t *height = get_control_text(state->height);
+            int w = _wtoi(width);
+            int h = _wtoi(height);
+            free(width);
+            free(height);
+            if (mode == 1 && (w < 320 || w > 16384 ||
+                              h < 240 || h > 16384)) {
+                MessageBoxW(hwnd,
+                            L"自定义窗口大小必须是 320×240 到 16384×16384。",
+                            L"MCLC", MB_ICONWARNING);
+                return 0;
+            }
+            g_settings.version_isolation =
+                IsDlgButtonChecked(hwnd, ID_SET_ISOLATION) == BST_CHECKED;
+            g_settings.priority = priority >= 0 && priority <= 2
+                                      ? priority : 1;
+            g_settings.window_mode = mode >= 0 && mode <= 2 ? mode : 0;
+            if (mode == 1) {
+                g_settings.width = w;
+                g_settings.height = h;
+            }
+            set_setting_from_control(&g_settings.window_title, state->title);
+            set_setting_from_control(&g_settings.custom_info, state->info);
+            set_setting_from_control(&g_settings.jvm_args, state->jvm);
+            set_setting_from_control(&g_settings.game_args, state->game);
+            set_setting_from_control(&g_settings.pre_launch, state->pre);
+            save_config();
+            gui_logf(L"设置已保存。");
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        if (LOWORD(wparam) == ID_SET_CANCEL ||
+            LOWORD(wparam) == IDCANCEL) {
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        break;
+
+    case WM_CLOSE:
+        DestroyWindow(hwnd);
+        return 0;
+
+    default:
+        break;
+    }
+    return DefWindowProcW(hwnd, message, wparam, lparam);
+}
+
+static void open_settings_window(void)
+{
+    WNDCLASSW wc;
+    gui_logf(L"用户点击设置。");
+    SettingsState state;
+    RECT owner;
+    RECT rect;
+    MSG msg;
+    int quit = 0;
+
+    memset(&state, 0, sizeof(state));
+    memset(&wc, 0, sizeof(wc));
+    wc.lpfnWndProc = settings_proc;
+    wc.hInstance = g_instance;
+    wc.hCursor = LoadCursorW(NULL, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    wc.lpszClassName = MCLC_SETTINGS_CLASS;
+    if (!RegisterClassW(&wc) &&
+        GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+        return;
+    }
+    GetWindowRect(g_hwnd, &owner);
+    rect.left = 0;
+    rect.top = 0;
+    rect.right = 560;
+    rect.bottom = 430;
+    AdjustWindowRectEx(&rect, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+                       FALSE, 0);
+    EnableWindow(g_hwnd, FALSE);
+    state.hwnd = CreateWindowExW(
+        WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
+        MCLC_SETTINGS_CLASS, L"设置",
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+        owner.left + 40, owner.top + 20,
+        rect.right - rect.left, rect.bottom - rect.top,
+        g_hwnd, NULL, g_instance, &state);
+    if (!state.hwnd) {
+        EnableWindow(g_hwnd, TRUE);
+        return;
+    }
+    ShowWindow(state.hwnd, SW_SHOW);
+    UpdateWindow(state.hwnd);
+    while (IsWindow(state.hwnd)) {
+        int result = GetMessageW(&msg, NULL, 0, 0);
+        if (result <= 0) {
+            if (result == 0) {
+                PostQuitMessage((int)msg.wParam);
+                quit = 1;
+            }
+            break;
+        }
+        if (!IsDialogMessageW(state.hwnd, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+    EnableWindow(g_hwnd, TRUE);
+    SetForegroundWindow(g_hwnd);
+    if (!quit) {
+        set_status(L"设置已更新。");
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /* Window procedure                                                    */
 /* ------------------------------------------------------------------ */
 
@@ -2181,6 +3514,12 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT message,
             break;
         case ID_OPEN_DIR:
             open_game_dir();
+            break;
+        case ID_USER_BUTTON:
+            open_user_window();
+            break;
+        case ID_SETTINGS:
+            open_settings_window();
             break;
         case ID_EXPORT_LOG:
             export_log();
@@ -2326,6 +3665,10 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line,
     InitializeCriticalSection(&g_log_lock);
     g_log_lock_ready = 1;
     gui_logf(L"MCLC GUI 启动。");
+    load_config();
+    if (!g_config_path || !path_exists(g_config_path)) {
+        save_config();
+    }
     SetProcessDPIAware();
     com_ready = SUCCEEDED(CoInitializeEx(NULL, COINIT_APARTMENTTHREADED));
     {

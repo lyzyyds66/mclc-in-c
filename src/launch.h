@@ -7,13 +7,18 @@
 
 typedef struct {
     wchar_t *game_dir;
+    const wchar_t *game_data_dir;
     const char *username;
     const char *uuid;
     const wchar_t *java;
+    const wchar_t *window_title;
+    const wchar_t *custom_info;
     int memory_mb;
     int width;
     int height;
     int demo;
+    int fullscreen;
+    int priority;
     int detach;
     int dry_run;
     int gui_mode;
