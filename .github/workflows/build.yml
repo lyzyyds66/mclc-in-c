@@ -1,0 +1,119 @@
+name: Build
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  msvc:
+    name: MSVC x64
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build
+        shell: cmd
+        run: build.bat
+
+      - name: Smoke test
+        shell: cmd
+        run: |
+          mclc.exe -V
+          mclc.exe -h >nul
+
+      - name: Upload MSVC artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mclc-msvc-x64
+          path: mclc.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  mingw:
+    name: MinGW-w64 x64
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            base-devel
+            mingw-w64-ucrt-x86_64-gcc
+            make
+
+      - name: Build
+        run: make
+
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          .\mclc.exe -V
+          .\mclc.exe -h | Out-Null
+
+      - name: Upload MinGW artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mclc-mingw-x64
+          path: mclc.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [msvc, mingw]
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release | Out-Null
+          Copy-Item dist/mclc-msvc-x64/mclc.exe release/mclc-msvc-x64.exe
+          Copy-Item dist/mclc-mingw-x64/mclc.exe release/mclc-mingw-x64.exe
+          Compress-Archive -Path README.md,LICENSE,release/mclc-msvc-x64.exe -DestinationPath release/mclc-msvc-x64.zip -Force
+          Compress-Archive -Path README.md,LICENSE,release/mclc-mingw-x64.exe -DestinationPath release/mclc-mingw-x64.zip -Force
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/mclc-msvc-x64.exe
+            release/mclc-mingw-x64.exe
+            release/mclc-msvc-x64.zip
+            release/mclc-mingw-x64.zip
+          generate_release_notes: true

@@ -1,0 +1,31 @@
+# Build output
+*.exe
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exp
+*.lib
+build/
+out/
+dist/
+release/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+CMakeFiles/
+CMakeCache.txt
+cmake-build-*/
+
+# MinGW / MSYS2
+*.dll.a
+*.a
+
+# Misc
+*.log
+.DS_Store
+Thumbs.db
