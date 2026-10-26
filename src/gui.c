@@ -2159,7 +2159,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT message,
             refresh_log_view();
             return 0;
         }
-        break;
+        return DefWindowProcW(hwnd, message, wparam, lparam);
 
     case WM_COMMAND:
         switch (LOWORD(wparam)) {

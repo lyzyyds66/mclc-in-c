@@ -40,6 +40,19 @@ static char *install_win32_error_text(DWORD code)
     return text;
 }
 
+static int native_zip_error_is_repairable(const char *detail)
+{
+    if (!detail) {
+        return 0;
+    }
+    return strstr(detail, "找不到 ZIP 中央目录") != NULL ||
+           strstr(detail, "ZIP 文件过小") != NULL ||
+           strstr(detail, "ZIP 中央目录损坏") != NULL ||
+           strstr(detail, "ZIP 中央目录越界") != NULL ||
+           strstr(detail, "ZIP 中央目录条目越界") != NULL ||
+           strstr(detail, "CRC32") != NULL;
+}
+
 static wchar_t *join_utf8(const wchar_t *base, const char *relative)
 {
     wchar_t *rel = utf8_to_wide(relative);
@@ -168,7 +181,7 @@ static int ensure_file(const wchar_t *path, const char *url, const char *sha1,
         }
     }
     if (!show_progress && !quiet) {
-        printf("  + %s\n", label);
+        printf("  + %s  <%s>\n", label, url);
         fflush(stdout);
     }
     if (http_download(wide_url, path, show_progress, size, error) != 0) {
@@ -591,11 +604,56 @@ int install_version(Version *version, const wchar_t *game_dir, int verify,
                 }
                 if (zip_extract_all(native_jar, natives_dir, error) < 0) {
                     char *detail = (error && *error) ? xstrdup(*error) : NULL;
-                    set_error(error, "解压本地库失败（%s）%s%s", lib->name,
-                              detail ? ": " : "", detail ? detail : "");
-                    free(detail);
-                    free(native_jar);
-                    goto fail;
+                    if (native_zip_error_is_repairable(detail)) {
+                        printf("  ! 本地库 ZIP 损坏，删除并重新下载: %s\n",
+                               lib->native_classifier ?
+                               lib->native_classifier : "natives");
+                        SetFileAttributesW(native_jar,
+                                           FILE_ATTRIBUTE_NORMAL);
+                        DeleteFileW(native_jar);
+                        if (path_exists(native_jar)) {
+                            set_error(error,
+                                      "无法删除损坏的本地库: %ls",
+                                      native_jar);
+                            free(detail);
+                            free(native_jar);
+                            goto fail;
+                        }
+                        free(detail);
+                        detail = NULL;
+                        if (error && *error) {
+                            free(*error);
+                            *error = NULL;
+                        }
+                        if (ensure_file(native_jar, lib->native_url,
+                                        lib->native_sha1, lib->native_size,
+                                        verify, 0, 0,
+                                        lib->native_classifier ?
+                                        lib->native_classifier : "natives",
+                                        error) != 0) {
+                            free(native_jar);
+                            goto fail;
+                        }
+                        if (zip_extract_all(native_jar, natives_dir,
+                                            error) < 0) {
+                            detail = (error && *error)
+                                         ? xstrdup(*error) : NULL;
+                            set_error(error,
+                                      "解压本地库失败（%s）%s%s",
+                                      lib->name, detail ? ": " : "",
+                                      detail ? detail : "");
+                            free(detail);
+                            free(native_jar);
+                            goto fail;
+                        }
+                    } else {
+                        set_error(error, "解压本地库失败（%s）%s%s",
+                                  lib->name, detail ? ": " : "",
+                                  detail ? detail : "");
+                        free(detail);
+                        free(native_jar);
+                        goto fail;
+                    }
                 }
                 native_count++;
                 free(native_jar);

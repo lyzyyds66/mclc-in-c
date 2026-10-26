@@ -333,6 +333,27 @@ static const char *pick_native_classifier(const JsonValue *library)
     return NULL;
 }
 
+static char *expand_native_classifier(const char *value)
+{
+    const char *arch;
+    StrBuf sb;
+
+    if (!value) {
+        return NULL;
+    }
+    arch = strcmp(version_os_arch(), "x86") == 0 ? "32" : "64";
+    sb_init(&sb);
+    while (*value) {
+        if (strncmp(value, "${arch}", 7) == 0) {
+            sb_append(&sb, arch);
+            value += 7;
+        } else {
+            sb_append_char(&sb, *value++);
+        }
+    }
+    return sb_take(&sb);
+}
+
 static char *default_library_url(const char *path)
 {
     StrBuf sb;
@@ -347,7 +368,7 @@ static void parse_library(const JsonValue *item, Library *lib)
     const char *name = json_get_string(item, "name");
     JsonValue *downloads;
     JsonValue *artifact;
-    const char *classifier;
+    char *classifier;
     int has_artifact = 1;
 
     memset(lib, 0, sizeof(*lib));
@@ -408,8 +429,8 @@ static void parse_library(const JsonValue *item, Library *lib)
         lib->size = 0;
     }
 
-    classifier = pick_native_classifier(item);
-    if (classifier) {
+    classifier = expand_native_classifier(pick_native_classifier(item));
+    if (classifier && *classifier) {
         JsonValue *classifiers = downloads ?
             json_get(downloads, "classifiers") : NULL;
         JsonValue *native = classifiers ?
@@ -434,6 +455,7 @@ static void parse_library(const JsonValue *item, Library *lib)
         }
         free(fallback);
     }
+    free(classifier);
 
     if (lib->path && !path_relative_is_safe(lib->path)) {
         free(lib->path);

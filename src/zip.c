@@ -299,7 +299,13 @@ int zip_extract_all(const wchar_t *zip_path, const wchar_t *dest_dir,
         if (i + 22 <= size && rd32((unsigned char *)data + i) ==
                                    ZIP_EOCD_SIGNATURE) {
             uint16_t comment_len = rd16((unsigned char *)data + i + 20);
-            if (i + 22 + comment_len == size) {
+            size_t end = i + 22 + (size_t)comment_len;
+            /*
+             * The ZIP specification puts EOCD at the very end, but some
+             * older JARs carry a small amount of trailing padding. Accept
+             * that as long as the central directory itself is in bounds.
+             */
+            if (end <= size && size - end <= 4096) {
                 eocd = i;
                 break;
             }
