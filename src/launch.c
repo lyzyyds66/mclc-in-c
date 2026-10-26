@@ -1102,8 +1102,9 @@ int launch_version(const LaunchOptions *options, Version *version,
     use_app_name = (wcschr(java, L'\\') || wcschr(java, L'/')) &&
                    path_exists(java);
     created = CreateProcessW(use_app_name ? java : NULL, command_wide,
-                             NULL, NULL, TRUE, 0, NULL, working_dir,
-                             &startup, &process);
+                             NULL, NULL, TRUE,
+                             options->gui_mode ? CREATE_NO_WINDOW : 0,
+                             NULL, working_dir, &startup, &process);
     if (!created) {
         char *msg = win32_error_text(GetLastError());
         set_error(error, "无法启动 Java: %s\n命令: %s", msg, preview);

@@ -9,8 +9,7 @@ if(MSVC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
-add_executable(mclc
-    src/main.c
+set(MCLC_CORE
     src/util.c
     src/json.c
     src/hash.c
@@ -23,23 +22,29 @@ add_executable(mclc
     src/launch.c
 )
 
-target_compile_definitions(mclc PRIVATE
-    _CRT_SECURE_NO_WARNINGS
-    UNICODE
-    _UNICODE
-    WIN32_LEAN_AND_MEAN
-)
+add_executable(mclc src/main.c ${MCLC_CORE})
+add_executable(mclc_gui WIN32 src/gui.c ${MCLC_CORE})
 
-if(MSVC)
-    target_compile_options(mclc PRIVATE /std:c11 /W4 /utf-8)
-    target_link_libraries(mclc PRIVATE winhttp shell32)
-else()
-    target_compile_options(mclc PRIVATE -Wall -Wextra -Wpedantic -O2)
-    target_link_options(mclc PRIVATE -static -static-libgcc)
-    target_link_libraries(mclc PRIVATE winhttp shell32)
-endif()
+foreach(target mclc mclc_gui)
+    target_compile_definitions(${target} PRIVATE
+        _CRT_SECURE_NO_WARNINGS
+        UNICODE
+        _UNICODE
+        WIN32_LEAN_AND_MEAN
+    )
+    target_link_libraries(${target} PRIVATE winhttp shell32)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /std:c11 /W4 /utf-8)
+    else()
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -O2)
+        target_link_options(${target} PRIVATE -static -static-libgcc)
+    endif()
+endforeach()
+
+target_link_libraries(mclc_gui PRIVATE comdlg32 ole32 user32 gdi32)
 
 if(MINGW)
-    # Pure Win32 application entry point (we use main + GetCommandLineW).
-    target_link_options(mclc PRIVATE -mconsole)
+    # mclc_gui is a WIN32 target, so CMake adds -mwindows automatically.
+    # mclc remains a console application for automation and diagnostics.
+    set_target_properties(mclc_gui PROPERTIES WIN32_EXECUTABLE TRUE)
 endif()

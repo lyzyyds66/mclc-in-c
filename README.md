@@ -10,13 +10,17 @@ natives 和 assets，再根据版本元数据构造 Java 启动命令。
 项目的目标是提供一个体积小、行为透明、便于学习和二次开发的启动器实现：它同时覆盖
 旧版 `minecraftArguments` 和新版 `arguments`、版本继承、Windows 平台规则、离线
 UUID、SHA-1 校验、增量补全以及 Java 运行时查找。仓库包含 GitHub Actions，推送后
-会自动用 MSVC 和 MinGW-w64 各构建一份 `mclc.exe`。
+会自动用 MSVC 和 MinGW-w64 各构建一套图形版和命令行版。
 
 > 当前版本仅支持 **Windows** 和**离线登录**。它不会要求或保存 Microsoft 账号密码，
 > 也不会自动下载 Java 运行时。
 
 ## 功能
 
+- 原生 Win32 图形界面（`mclc_gui.exe`）：版本选择、用户名、内存、Java 路径、
+  游戏目录、演示模式、SHA-1 校验和实时日志
+- GUI 使用后台线程执行下载和启动，界面不会卡死；不创建控制台窗口
+- 保留命令行版（`mclc.exe`）用于自动化、CI 和排错
 - 从 `%APPDATA%\.minecraft` 读取/安装版本，也支持 `--dir` 指定任意游戏目录
 - 从 Mojang 官方版本清单下载版本 JSON
 - 依据 `rules` 处理 Windows 平台、系统架构和 feature 规则
@@ -29,7 +33,7 @@ UUID、SHA-1 校验、增量补全以及 Java 运行时查找。仓库包含 Git
 - 生成原版离线 UUID（`UUID.nameUUIDFromBytes("OfflinePlayer:<name>")`）
 - 自动寻找 `--java`、`MCLC_JAVA`、`JAVA_HOME`、官方启动器 runtime 和常见 JDK
 - 纯 C 实现 ZIP/DEFLATE 解压，不需要 zlib、libcurl 或 .NET
-- 单个 `mclc.exe`，除 Windows 系统 DLL 外无运行时依赖
+- 两个独立的静态链接 exe，除 Windows 系统 DLL 外无运行时依赖
 
 ## 构建
 
@@ -50,6 +54,12 @@ cl /nologo /std:c11 /O2 /utf-8 /MT /D_CRT_SECURE_NO_WARNINGS /DUNICODE /D_UNICOD
   src\main.c src\util.c src\json.c src\hash.c src\http.c src\inflate.c ^
   src\zip.c src\version.c src\install.c src\remote.c src\launch.c ^
   /Fe:mclc.exe /link winhttp.lib shell32.lib
+
+cl /nologo /std:c11 /O2 /utf-8 /MT /D_CRT_SECURE_NO_WARNINGS /DUNICODE /D_UNICODE ^
+  src\gui.c src\util.c src\json.c src\hash.c src\http.c src\inflate.c ^
+  src\zip.c src\version.c src\install.c src\remote.c src\launch.c ^
+  /Fe:mclc_gui.exe /link /SUBSYSTEM:WINDOWS winhttp.lib shell32.lib ^
+  comdlg32.lib ole32.lib user32.lib gdi32.lib
 ```
 
 ### 2. MinGW-w64 / MSYS2
@@ -65,6 +75,12 @@ gcc -std=gnu11 -O2 -Wall -Wextra -D_CRT_SECURE_NO_WARNINGS -DUNICODE -D_UNICODE 
     src/main.c src/util.c src/json.c src/hash.c src/http.c src/inflate.c \
     src/zip.c src/version.c src/install.c src/remote.c src/launch.c \
     -static -static-libgcc -lwinhttp -lshell32 -o mclc.exe
+
+gcc -std=gnu11 -O2 -Wall -Wextra -D_CRT_SECURE_NO_WARNINGS -DUNICODE -D_UNICODE \
+    src/gui.c src/util.c src/json.c src/hash.c src/http.c src/inflate.c \
+    src/zip.c src/version.c src/install.c src/remote.c src/launch.c \
+    -mwindows -static -static-libgcc -lwinhttp -lshell32 -lcomdlg32 -lole32 \
+    -luser32 -lgdi32 -o mclc_gui.exe
 ```
 
 ### 3. CMake
@@ -74,7 +90,10 @@ cmake -S . -B build
 cmake --build build --config Release
 ```
 
-产物在 `build\` 或 `build\Release\` 下，文件名 `mclc.exe`。
+产物在 `build\` 或 `build\Release\` 下：
+
+- `mclc_gui.exe`：图形界面（推荐）
+- `mclc.exe`：命令行版（CI/自动化用）
 
 ## GitHub Actions 自动编译
 
@@ -96,12 +115,14 @@ CI 会并行完成两套构建：
 | `MSVC x64` | Visual Studio 2022 + MSVC | `mclc-msvc-x64` artifact |
 | `MinGW-w64 x64` | MSYS2 UCRT64 + GCC | `mclc-mingw-x64` artifact |
 
-每次运行结束后，在 GitHub 的 **Actions → Build → 对应运行 → Artifacts** 可以下载
-`mclc.exe`。创建 Release 时会附加：
+每个 artifact 都包含 `mclc_gui.exe` 和 `mclc.exe`。在 GitHub 的
+**Actions → Build → 对应运行 → Artifacts** 下载。创建 Release 时会附加：
 
-- `mclc-msvc-x64.exe`
-- `mclc-mingw-x64.exe`
-- 两个包含 `README.md`、`LICENSE` 和 exe 的 zip 包
+- `mclc-gui-msvc-x64.exe`
+- `mclc-cli-msvc-x64.exe`
+- `mclc-gui-mingw-x64.exe`
+- `mclc-cli-mingw-x64.exe`
+- 两个包含 `README.md`、`LICENSE`、GUI 和 CLI 的 zip 包
 
 ### 提交到 GitHub
 
@@ -128,6 +149,44 @@ git push origin v1.0.0
 随后 Actions 会编译 MSVC 和 MinGW 两个版本并自动生成 Release。
 
 ## 使用
+
+### 图形界面（推荐）
+
+双击：
+
+```text
+mclc_gui.exe
+```
+
+窗口里可以设置：
+
+- **游戏目录**：默认 `%APPDATA%\.minecraft`，可浏览选择
+- **版本**：下拉列表显示本地版本，也可以直接输入官方版本号
+- **用户名**：离线玩家名
+- **内存 MB**：最大 Java 堆内存
+- **Java**：留空自动查找，或浏览选择 `java.exe`
+- **演示模式 / 校验 SHA-1**
+- **启动游戏**：自动补齐缺失文件并启动
+- **安装最新正式版**：下载 Mojang 最新正式版
+- **打开游戏目录**
+- **日志**：显示下载、校验、安装和启动过程，不需要额外控制台
+
+图形界面在后台线程执行下载和安装，因此界面不会卡死。启动 Java 时使用
+`CREATE_NO_WINDOW`，不会弹出命令行窗口。
+
+典型流程：
+
+1. 双击 `mclc_gui.exe`
+2. 确认游戏目录
+3. 点“安装最新正式版”，或直接在版本框输入 `1.21.4`
+4. 点“启动游戏”
+
+如果输入的是本地没有的官方版本号，程序会先从 Mojang 下载版本 JSON，再补全客户端
+和资源。
+
+### 命令行（可选）
+
+`mclc.exe` 仍然保留，用于自动化、CI 和排错：
 
 ```text
 mclc                          交互式启动
@@ -163,17 +222,21 @@ mclc remote [--snapshots]     列出 Mojang 官方版本
 示例：
 
 ```bat
-mclc install latest
-mclc launch 1.21.4 --memory 4096
-mclc launch 1.20.1 --user Alex --java "C:\Program Files\Eclipse Adoptium\jdk-17\bin\java.exe"
-mclc launch latest --dry-run
-mclc launch 1.20.1 --jvm -Dorg.lwjgl.util.Debug=true
+mclc.exe install latest
+mclc.exe launch 1.21.4 --memory 4096
+mclc.exe launch 1.20.1 --user Alex --java "C:\Program Files\Eclipse Adoptium\jdk-17\bin\java.exe"
+mclc.exe launch latest --dry-run
+mclc.exe launch 1.20.1 --jvm -Dorg.lwjgl.util.Debug=true
 ```
 
 ### 第一次运行
 
+图形界面：双击 `mclc_gui.exe`，点“安装最新正式版”，安装完成后选择版本并启动。
+
+命令行：
+
 ```bat
-mclc launch latest
+mclc.exe launch latest
 ```
 
 如果本地没有版本 JSON，程序会：
@@ -185,13 +248,13 @@ mclc launch latest
 5. 下载 `assets\indexes\<assetIndex>.json` 以及所有 `assets\objects`
 6. 查找 Java，构造参数并启动
 
-首次安装需要下载数百 MB 的资源，耗取决于网络。之后的启动只补齐缺失文件。
+首次安装需要下载数百 MB 的资源，耗时取决于网络。之后的启动只补齐缺失文件。
 
 ### 离线登录
 
 MCLC 使用离线模式：
 
-- `--user` 决定玩家名
+- 图形界面中的“用户名”或命令行 `--user` 决定玩家名
 - `--uuid` 可覆盖 UUID；不指定时按 Mojang 的离线 UUID 算法生成
 - 启动参数中的 `accessToken` 为 `0`，`userType` 为 `legacy`
 
@@ -243,6 +306,7 @@ MCLC 不修改官方启动器的 `launcher_profiles.json`，可以与官方启�
 
 | 文件 | 作用 |
 |---|---|
+| `src/gui.c` | Win32 图形界面、后台任务、日志管道 |
 | `src/main.c` | 命令行解析、交互界面、命令编排 |
 | `src/util.c` | UTF-8/UTF-16、路径、目录、动态字符串 |
 | `src/json.c` | 无依赖 JSON 解析器 |
@@ -258,22 +322,27 @@ MCLC 不修改官方启动器的 `launcher_profiles.json`，可以与官方启�
 启动流程：
 
 ```text
-版本清单 -> 版本 JSON -> Version(layers/libraries)
+GUI 读取目录/版本/用户名/内存
+        -> 后台线程
+        -> 版本清单 -> 版本 JSON -> Version(layers/libraries)
         -> install_version() 补齐文件
         -> build_arguments() 变量替换、rules、classpath
         -> launch_find_java()
-        -> CreateProcessW(java.exe ...)
+        -> CreateProcessW(java.exe ..., CREATE_NO_WINDOW)
+        -> 日志管道 -> 图形界面日志框
 ```
+
+CLI 和 GUI 共用同一套 `Version` / `install_version` / `launch_version` 核心。
 
 ## 已知限制
 
 - 仅支持 Windows；代码使用 WinHTTP、Win32 路径和 `CreateProcessW`
 - 仅支持离线登录，没有 Microsoft OAuth/设备码登录
 - 不自动下载 Java 运行时
-- 不实现官方启动器的 UI、新闻、皮肤或账号管理
+- 图形界面保持轻量，没有新闻、皮肤、账号切换等官方启动器功能
 - 不支持 ZIP64；Minecraft 的 natives jar 不会触发该限制
-- 不处理超长路径（> 260 字符）的系统级开关；建议把 `--dir` 放在较短路径下
-- `--verify` 会对所有资源做 SHA-1，资源多时明显变慢
+- 不处理超长路径（> 260 字符）的系统级开关；建议把游戏目录放在较短路径下
+- 校验已有文件 SHA-1 时资源多会明显变慢
 - Forge/NeoForge 等大型整合包的元数据变体很多；若某个版本参数特殊，可用
   `--dry-run` 查看命令行后再调整 `--jvm` / `--game-arg`
 
@@ -281,11 +350,13 @@ MCLC 不修改官方启动器的 `launcher_profiles.json`，可以与官方启�
 
 **`无法加载版本 ...`**
 
-确认 `versions\<id>\<id>.json` 存在；可以先执行 `mclc install <id>`。
+确认 `versions\<id>\<id>.json` 存在；可以先在图形界面点“安装最新正式版”，或执行
+`mclc.exe install <id>`。
 
 **`找不到指定的 Java` / `UnsupportedClassVersionError`**
 
-用 `--java` 指向正确的 `java.exe`，或安装对应 JDK。
+在图形界面的 Java 输入框选择正确的 `java.exe`，或安装对应 JDK。命令行可用
+`--java`。
 
 **`HTTP 404`**
 

@@ -16,6 +16,7 @@ typedef struct {
     int demo;
     int detach;
     int dry_run;
+    int gui_mode;
     const char *const *extra_jvm;
     size_t extra_jvm_count;
     const char *const *extra_game;

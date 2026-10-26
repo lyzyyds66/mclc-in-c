@@ -5,6 +5,7 @@
 #include "version.h"
 
 #include <io.h>
+#include <locale.h>
 #include <shellapi.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -692,6 +693,9 @@ int main(void)
 
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
+    if (!setlocale(LC_CTYPE, ".UTF-8")) {
+        setlocale(LC_CTYPE, ".UTF8");
+    }
     setvbuf(stdout, NULL, _IONBF, 0);
 
     argv = CommandLineToArgvW(GetCommandLineW(), &argc);
